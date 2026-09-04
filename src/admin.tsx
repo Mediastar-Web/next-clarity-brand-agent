@@ -142,18 +142,22 @@ export function BrandAgentAdmin({
   const [projectDraft, setProjectDraft] = useState('');
   const [siteUrlDraft, setSiteUrlDraft] = useState('');
   /**
-   * Frozen on first load, on purpose.
+   * The dashboard reloads when the state it reads has changed, and only then.
    *
-   * Every status read mints a fresh CSRF nonce, and the nonce is inside the
-   * iframe URL — so following `status.embedUrl` meant that saving a project id,
-   * connecting, or any other action changed the `src` and reloaded the whole
-   * dashboard from scratch, throwing the administrator back to its start page
-   * mid-onboarding. WordPress never has this problem: its page is rendered once
-   * and the iframe is never touched again. The nonce we hand the dashboard stays
-   * valid for its full lifetime, and the panel's own actions keep using the
-   * fresh token from `statusRef`. Reload the page for a new one.
+   * Every status read mints a fresh CSRF nonce, and the nonce lives inside the
+   * iframe URL — so following `status.embedUrl` blindly reloaded the whole
+   * dashboard on every action, throwing the administrator back to its start
+   * page mid-onboarding. Freezing it outright is the opposite mistake: after a
+   * disconnect the iframe keeps showing the project as connected, because the
+   * URL is byte-identical except for that nonce and nothing tells the dashboard
+   * to look again.
+   *
+   * So the trigger is what the dashboard actually branches on — whether the
+   * site is connected, and which project is linked — while the nonce alone
+   * never moves it.
    */
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
+  const embedKeyRef = useRef('');
   const [log, setLog] = useState<LogEntry[]>([]);
   const [authInfo, setAuthInfo] = useState<AuthInfo | null>(null);
   const [setupToken, setSetupToken] = useState('');
@@ -196,7 +200,11 @@ export function BrandAgentAdmin({
       // Prefilled with the origin this page was served from, so confirming the
       // domain is one click in the ordinary case.
       setSiteUrlDraft((current) => current || next.siteUrl || next.siteUrlSuggestion || '');
-      setEmbedUrl((current) => current ?? next.embedUrl ?? null);
+      const embedKey = `${next.connected}|${next.projectId}|${next.agentEnabled}`;
+      if (next.embedUrl && embedKey !== embedKeyRef.current) {
+        embedKeyRef.current = embedKey;
+        setEmbedUrl(next.embedUrl);
+      }
       setState('ready');
     } catch {
       setState('error');
