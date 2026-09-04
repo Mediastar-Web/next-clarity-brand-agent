@@ -1,4 +1,4 @@
-import { PROXY_BASE_PATH, normalizeSiteUrlInput, type BrandAgentContext } from './config.js';
+import { PLUGIN_USER_AGENT, PROXY_BASE_PATH, normalizeSiteUrlInput, type BrandAgentContext } from './config.js';
 import { buildEmbedUrl, embedOrigin, isValidProjectId } from './embed.js';
 import { getHmacSecret, verifyIncomingSignature } from './crypto.js';
 import { signedBackendGet } from './backend.js';
@@ -80,6 +80,30 @@ export function requestOrigin(request: Request): string {
   return normalizeSiteUrlInput(candidate) ?? '';
 }
 
+/**
+ * Headers for a proxied widget call, built the way the plugin builds them in
+ * `build_backend_request()`: its own identity and the ngrok bypass first, then
+ * the visitor's `Accept` and `User-Agent` laid on top when the request carries
+ * them. For real widget traffic that means the backend sees the browser, as it
+ * does through WordPress; the plugin string only shows through when a caller
+ * sends neither.
+ */
+function proxyHeaders(request: Request, base: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = {
+    ...base,
+    'User-Agent': PLUGIN_USER_AGENT,
+    'ngrok-skip-browser-warning': 'true',
+  };
+
+  const accept = request.headers.get('accept');
+  if (accept) headers.Accept = accept;
+
+  const userAgent = request.headers.get('user-agent');
+  if (userAgent) headers['User-Agent'] = userAgent;
+
+  return headers;
+}
+
 /** Path under the proxy base, e.g. `api/config/read`. */
 function proxySubPath(request: Request): string {
   const { pathname } = new URL(request.url);
@@ -113,11 +137,7 @@ async function handleConfigRead(ctx: BrandAgentContext, request: Request): Promi
     upstream = await signedBackendGet(
       ctx,
       pathAndQuery,
-      {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'User-Agent': 'BrandAgent-Next/1.0',
-      },
+      proxyHeaders(request, { 'Content-Type': 'application/json', Accept: 'application/json' }),
       { signal: AbortSignal.timeout(30_000) },
     );
   } catch (error) {
@@ -201,11 +221,7 @@ async function handleInit(ctx: BrandAgentContext, request: Request): Promise<Res
     upstream = await signedBackendGet(
       ctx,
       pathAndQuery,
-      {
-        Accept: 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'User-Agent': 'BrandAgent-Next/1.0',
-      },
+      proxyHeaders(request, { Accept: 'text/event-stream', 'Cache-Control': 'no-cache' }),
       // No timeout signal: an SSE response stays open by design. The client
       // aborting propagates through `request.signal`.
       { signal: request.signal },

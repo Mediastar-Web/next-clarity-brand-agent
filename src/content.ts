@@ -117,6 +117,9 @@ export function sitemapContentProvider(options: SitemapContentProviderOptions): 
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
       const res = await fetch(current, {
+        // Deliberately not the plugin's identity: this fetches your own pages,
+        // never Microsoft, and WordPress has no equivalent — it reads its own
+        // database. Saying what it really is keeps it filterable in your logs.
         headers: { Accept: 'text/html', 'User-Agent': 'BrandAgent-Next/1.0' },
         redirect: 'manual',
         signal: AbortSignal.timeout(timeoutMs),

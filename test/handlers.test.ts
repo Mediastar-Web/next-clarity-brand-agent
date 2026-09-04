@@ -325,3 +325,42 @@ test('connect is attempted even without a project id, as the plugin does', async
   assert.equal(result.success, false);
   assert.equal(result.errorCode, 'transport', 'it must fail on the wire, not on a local guard');
 });
+
+test('the widget proxy presents itself as the plugin, and forwards the visitor', async () => {
+  const ctx = resolveConfig({
+    siteUrl: SITE,
+    storage: memoryStorage(),
+    encryptionKey: 'k',
+    rateLimit: false,
+    backendBaseUrl: 'https://backend.test',
+  });
+  await setHmacSecret(ctx, SECRET);
+
+  const seen: Record<string, string>[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    seen.push(Object.fromEntries(new Headers(init?.headers).entries()));
+    return new Response('{}', { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const { GET } = createProxyHandlers(ctx);
+    await GET(
+      new Request(`${SITE}/a/msba/api/config/read?clientId=example-com`, {
+        headers: { accept: 'text/plain', 'user-agent': 'Mozilla/5.0 (Test)' },
+      }),
+    );
+    await GET(new Request(`${SITE}/a/msba/api/config/read?clientId=example-com`));
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  // A real visitor: the backend sees the browser, exactly as it does through
+  // WordPress, which overwrites both headers with the incoming ones.
+  assert.equal(seen[0]?.['user-agent'], 'Mozilla/5.0 (Test)');
+  assert.equal(seen[0]?.accept, 'text/plain');
+  assert.equal(seen[0]?.['ngrok-skip-browser-warning'], 'true');
+
+  // Nobody to forward: what shows through is the plugin, not us.
+  assert.equal(seen[1]?.['user-agent'], 'BrandAgent-WordPress-Plugin/1.0');
+});

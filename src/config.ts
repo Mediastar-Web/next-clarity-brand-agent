@@ -42,6 +42,16 @@ export type RateLimitPolicy = 'enforced' | 'disabled' | 'unkeyed';
 /** Version of the `microsoft-clarity` plugin this speaks the protocol of. */
 export const MIRRORED_PLUGIN_VERSION = '0.10.29';
 
+/**
+ * The identity the plugin presents to the Brand Agent backend on the two widget
+ * proxy endpoints. We send the same string: everything else in this integration
+ * declares itself as the WordPress plugin — `integration=Wordpress`, the
+ * `X-WordPress-*` headers, `platform: wordpress`, the tag's `ref` — and a lone
+ * header saying otherwise would be the one place a User-Agent check could see
+ * through it, for no benefit.
+ */
+export const PLUGIN_USER_AGENT = 'BrandAgent-WordPress-Plugin/1.0';
+
 /** Default widget loader, same URL the plugin injects. */
 export const DEFAULT_FRONTEND_INJECTION_URL =
   'https://adsagentclientafd-b7hqhjdrf3fpeqh2.b01.azurefd.net/frontendInjection.js';
