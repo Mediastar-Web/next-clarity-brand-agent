@@ -12,13 +12,14 @@ export function normalizeSiteUrl(url: string): string {
   return withoutScheme.toLowerCase().replace(/[./:]/g, '-');
 }
 
-function encryptionKeyBytes(ctx: BrandAgentContext): Buffer | null {
-  if (!ctx.encryptionKey) return null;
-  return createHash('sha256').update(ctx.encryptionKey).digest();
+async function encryptionKeyBytes(ctx: BrandAgentContext): Promise<Buffer | null> {
+  const key = await ctx.encryptionKey();
+  if (!key) return null;
+  return createHash('sha256').update(key).digest();
 }
 
-function encrypt(ctx: BrandAgentContext, plaintext: string): string {
-  const key = encryptionKeyBytes(ctx);
+async function encrypt(ctx: BrandAgentContext, plaintext: string): Promise<string> {
+  const key = await encryptionKeyBytes(ctx);
   if (!key) return `plain:${plaintext}`;
 
   const iv = randomBytes(16);
@@ -27,10 +28,10 @@ function encrypt(ctx: BrandAgentContext, plaintext: string): string {
   return `${iv.toString('base64')}:${enc.toString('base64')}`;
 }
 
-function decrypt(ctx: BrandAgentContext, payload: string): string | null {
+async function decrypt(ctx: BrandAgentContext, payload: string): Promise<string | null> {
   if (payload.startsWith('plain:')) return payload.slice('plain:'.length);
 
-  const key = encryptionKeyBytes(ctx);
+  const key = await encryptionKeyBytes(ctx);
   if (!key) return null;
 
   const sep = payload.indexOf(':');
@@ -51,7 +52,7 @@ function decrypt(ctx: BrandAgentContext, payload: string): string | null {
 /** The stored HMAC secret in clear, or `null` when absent or unreadable. */
 export async function getHmacSecret(ctx: BrandAgentContext): Promise<string | null> {
   const stored = await ctx.storage.get(KEYS.hmacSecret);
-  return stored ? decrypt(ctx, stored) : null;
+  return stored ? await decrypt(ctx, stored) : null;
 }
 
 /**
@@ -61,7 +62,7 @@ export async function getHmacSecret(ctx: BrandAgentContext): Promise<string | nu
  */
 export async function setHmacSecret(ctx: BrandAgentContext, rawSecret: string): Promise<void> {
   const clean = rawSecret.trim().replace(/[\r\n ]/g, '');
-  await ctx.storage.set(KEYS.hmacSecret, encrypt(ctx, clean));
+  await ctx.storage.set(KEYS.hmacSecret, await encrypt(ctx, clean));
   await ctx.storage.set(KEYS.hmacPlatform, 'wordpress');
 }
 
@@ -103,8 +104,8 @@ export function buildInboundMessage(siteUrl: string, timestamp: string, body: st
 }
 
 export class BrandAgentNotConnectedError extends Error {
-  constructor() {
-    super('No HMAC secret stored: this site is not connected to the Brand Agent.');
+  constructor(reason = 'No HMAC secret stored') {
+    super(`${reason}: this site is not connected to the Brand Agent.`);
     this.name = 'BrandAgentNotConnectedError';
   }
 }
@@ -131,7 +132,10 @@ export async function buildSignedHeaders(
   const secret = await getHmacSecret(ctx);
   if (!secret) throw new BrandAgentNotConnectedError();
 
-  const normalized = normalizeSiteUrl(ctx.siteUrl);
+  const siteUrl = await ctx.siteUrl();
+  if (!siteUrl) throw new BrandAgentNotConnectedError('No site URL confirmed');
+
+  const normalized = normalizeSiteUrl(siteUrl);
   const timestamp = String(Math.floor(Date.now() / 1000));
   // 32 alphanumeric characters, like wp_generate_password(32, false).
   const nonce = randomBytes(16).toString('hex');
@@ -150,7 +154,7 @@ export async function buildSignedHeaders(
 
   return {
     'X-WordPress-Client-Id': normalized,
-    'X-WordPress-Site-Url': ctx.siteUrl,
+    'X-WordPress-Site-Url': siteUrl,
     'X-WordPress-Timestamp': timestamp,
     'X-WordPress-Nonce': nonce,
     'X-WordPress-Signature': createHmac('sha256', secret).update(canonicalRequest).digest('base64'),
@@ -168,14 +172,14 @@ export async function verifyIncomingSignature(
   timestamp: string,
   rawBody = '',
 ): Promise<boolean> {
-  const secret = await getHmacSecret(ctx);
-  if (!secret || !signature || !timestamp) return false;
+  const [secret, siteUrl] = await Promise.all([getHmacSecret(ctx), ctx.siteUrl()]);
+  if (!secret || !siteUrl || !signature || !timestamp) return false;
 
   const ts = Number.parseInt(timestamp, 10);
   if (!Number.isFinite(ts)) return false;
   if (Math.abs(Math.floor(Date.now() / 1000) - ts) > HMAC_TIMESTAMP_WINDOW_S) return false;
 
-  const message = buildInboundMessage(ctx.siteUrl, timestamp, rawBody);
+  const message = buildInboundMessage(siteUrl, timestamp, rawBody);
   const expected = createHmac('sha256', secret).update(message).digest('base64');
 
   return safeEqual(expected, signature);

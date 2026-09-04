@@ -24,6 +24,7 @@ export const KEYS = {
   backendUrl: 'brandagent_backend_url',
   backendUrlAt: 'brandagent_backend_url_at',
   noncePrefix: 'brandagent_connect_nonce_',
+  siteUrl: 'brandagent_site_url',
 } as const;
 
 /**
@@ -55,10 +56,26 @@ export const BACKEND_URL_TTL_MS = 24 * 60 * 60 * 1000;
 export const CONTENT_WEBHOOK_BASE_PATH = '/api/v1/wordpress/webhooks/';
 
 export interface BrandAgentContext {
-  siteUrl: string;
+  /** Site URL pinned in code, or null when it is left to first-run. */
+  configuredSiteUrl: string | null;
+  /**
+   * The site URL in force — configured, else confirmed from the panel, else
+   * `null`. Async because the confirmed one lives in storage: a Next.js app has
+   * no `home_url()` to read synchronously at import time.
+   */
+  siteUrl(): Promise<string | null>;
+  /** Where the current value comes from. */
+  siteUrlSource(): Promise<'config' | 'storage' | 'none'>;
+  /**
+   * Confirm the domain this site answers on. Refused once the site is
+   * connected: the value is the HMAC client id, so changing it under a live
+   * credential only produces 401s.
+   */
+  claimSiteUrl(candidate: string): Promise<{ ok: boolean; siteUrl?: string; error?: string }>;
   clarityProjectId: string;
   storage: BrandAgentStorage;
-  encryptionKey: string | null;
+  /** The at-rest key: configured, else minted by the storage adapter, else null. */
+  encryptionKey(): Promise<string | null>;
   content: BrandAgentContentProvider | null;
   allowedContentTypes: string[];
   clarityServerUrl: string;
@@ -76,12 +93,65 @@ function trimTrailingSlashes(url: string): string {
   return url.replace(/\/+$/, '');
 }
 
-export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
-  const siteUrl = trimTrailingSlashes((input.siteUrl ?? '').trim());
-  if (!siteUrl) throw new Error('next-clarity-brand-agent: `siteUrl` is required.');
-  if (!input.storage) throw new Error('next-clarity-brand-agent: `storage` is required.');
+/**
+ * Accept a domain to speak for: an http(s) URL, no credentials, no query, no
+ * fragment. Returns it trimmed to origin + path, or null when it is not one.
+ */
+export function normalizeSiteUrlInput(candidate: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(candidate.trim());
+  } catch {
+    return null;
+  }
 
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+
+  return trimTrailingSlashes(url.origin + url.pathname);
+}
+
+export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
+  if (!input.storage) throw new Error('next-clarity-brand-agent: `storage` is required.');
+  const storage: BrandAgentStorage = input.storage;
+
+  const configuredSiteUrl = input.siteUrl?.trim() ? trimTrailingSlashes(input.siteUrl.trim()) : null;
   const log = input.logger ?? (() => {});
+
+  async function siteUrl(): Promise<string | null> {
+    if (configuredSiteUrl) return configuredSiteUrl;
+    return (await storage.get(KEYS.siteUrl)) || null;
+  }
+
+  async function siteUrlSource(): Promise<'config' | 'storage' | 'none'> {
+    if (configuredSiteUrl) return 'config';
+    return (await storage.get(KEYS.siteUrl)) ? 'storage' : 'none';
+  }
+
+  // Minted at most once per process, and only when it is actually needed.
+  let keyPromise: Promise<string | null> | null = null;
+  let warnedAboutClearSecret = false;
+
+  function encryptionKey(): Promise<string | null> {
+    if (input.encryptionKey === null) return Promise.resolve(null);
+
+    const explicit = input.encryptionKey?.trim();
+    if (explicit) return Promise.resolve(explicit);
+
+    keyPromise ??= (async () => {
+      if (storage.encryptionKey) return (await storage.encryptionKey()).trim() || null;
+
+      if (!warnedAboutClearSecret) {
+        warnedAboutClearSecret = true;
+        log(
+          'brand-agent: the HMAC secret is stored in clear — pass `encryptionKey`, or use a storage adapter that can keep one apart from the state',
+        );
+      }
+      return null;
+    })();
+
+    return keyPromise;
+  }
   const rateLimit = input.rateLimit === false ? null : (input.rateLimit ?? {});
   const ipOptions: ClientIpOptions = { trustProxy: rateLimit?.trustProxy, resolve: rateLimit?.clientIp };
 
@@ -99,10 +169,40 @@ export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
   }
 
   return {
+    configuredSiteUrl,
     siteUrl,
+    siteUrlSource,
+
+    async claimSiteUrl(candidate: string) {
+      if (configuredSiteUrl) {
+        return { ok: false, error: 'The site URL is pinned in the configuration.' };
+      }
+
+      const normalized = normalizeSiteUrlInput(candidate);
+      if (!normalized) {
+        return { ok: false, error: 'Not a usable site URL: expected something like https://example.com.' };
+      }
+
+      const current = await storage.get(KEYS.siteUrl);
+      if (current === normalized) return { ok: true, siteUrl: normalized };
+
+      // Once a credential exists it is bound to the old value, so swapping the
+      // identity underneath it would leave a connection that can only 401.
+      if (current && (await storage.get(KEYS.hmacSecret))) {
+        return {
+          ok: false,
+          error: 'The site is connected on ' + current + '. Disconnect first to change the domain.',
+        };
+      }
+
+      await storage.set(KEYS.siteUrl, normalized);
+      log('brand-agent: site URL confirmed', { siteUrl: normalized });
+      return { ok: true, siteUrl: normalized };
+    },
+
     clarityProjectId: (input.clarityProjectId ?? '').trim(),
-    storage: input.storage,
-    encryptionKey: input.encryptionKey === null ? null : (input.encryptionKey ?? '').trim() || null,
+    storage,
+    encryptionKey,
     content: input.content ?? null,
     allowedContentTypes: input.allowedContentTypes ?? ['post', 'page'],
     clarityServerUrl: trimTrailingSlashes(input.clarityServerUrl?.trim() || DEFAULT_CLARITY_SERVER_URL),

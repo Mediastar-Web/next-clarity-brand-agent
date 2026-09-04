@@ -1,11 +1,14 @@
+import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { BrandAgentStorage } from './types.js';
 
 /** In-memory store. Fine for tests; state is lost on restart. */
 export function memoryStorage(): BrandAgentStorage {
   const map = new Map<string, string>();
   return {
+    describe: () => ({ location: 'memory (this process only)', ephemeral: true }),
+
     async get(key) {
       return map.get(key) ?? null;
     },
@@ -68,7 +71,55 @@ export function fileStorage(options: { path?: string } = {}): BrandAgentStorage 
     return next;
   }
 
+  /**
+   * The at-rest key, in a sibling file rather than in the state itself.
+   *
+   * Encrypting the secret with a key stored beside it would be theatre against
+   * anyone holding the file — but a leaked state dump, a stray backup or a
+   * misdirected copy is a different and far more common accident, and against
+   * those this is real. It is the same arrangement WordPress has, salts in
+   * `wp-config.php` and ciphertext in the database.
+   */
+  async function encryptionKey(): Promise<string> {
+    const keyPath = `${path.replace(/\.json$/, '')}.key`;
+
+    return enqueue(async () => {
+      try {
+        const existing = (await readFile(keyPath, 'utf8')).trim();
+        if (existing) return existing;
+      } catch {
+        // Not there yet: mint one below.
+      }
+
+      const generated = randomBytes(32).toString('base64');
+      await mkdir(dirname(keyPath), { recursive: true });
+
+      try {
+        // Exclusive create: another process that got there first keeps its key,
+        // and we read theirs rather than overwriting a key that already has
+        // ciphertext depending on it.
+        await writeFile(keyPath, generated, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        await chmod(keyPath, 0o600);
+        return generated;
+      } catch {
+        const existing = (await readFile(keyPath, 'utf8')).trim();
+        if (existing) return existing;
+        throw new Error(`brand-agent: could not create the encryption key at ${keyPath}.`);
+      }
+    });
+  }
+
   return {
+    encryptionKey,
+
+    describe() {
+      // A guess, and labelled as one wherever it is shown: a path inside the
+      // working directory is usually the deployed app itself, which containers
+      // rebuild on every release. A mounted volume normally sits outside it.
+      const full = resolve(path);
+      return { location: full, ephemeral: full.startsWith(`${resolve(process.cwd())}/`) };
+    },
+
     async get(key) {
       return (await load())[key] ?? null;
     },

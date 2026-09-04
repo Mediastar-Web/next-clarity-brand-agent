@@ -29,8 +29,21 @@ export async function getSiteId(ctx: BrandAgentContext): Promise<string> {
 }
 
 export async function getStatus(ctx: BrandAgentContext): Promise<BrandAgentStatus> {
-  const [oauth, secret, inject, platform, siteId, advertiserId, connectedAt, unverified, projectId, agentEnabled] =
-    await Promise.all([
+  const [
+    oauth,
+    secret,
+    inject,
+    platform,
+    siteId,
+    advertiserId,
+    connectedAt,
+    unverified,
+    projectId,
+    agentEnabled,
+    siteUrl,
+    siteUrlSource,
+    encryptionKey,
+  ] = await Promise.all([
       ctx.storage.get(KEYS.oauthSuccess),
       getHmacSecret(ctx),
       ctx.storage.get(KEYS.injectScript),
@@ -40,8 +53,11 @@ export async function getStatus(ctx: BrandAgentContext): Promise<BrandAgentStatu
       ctx.storage.get(KEYS.connectedAt),
       ctx.storage.get(KEYS.connectUnverified),
       getProjectId(ctx),
-      ctx.storage.get(KEYS.agentEnabled),
-    ]);
+    ctx.storage.get(KEYS.agentEnabled),
+    ctx.siteUrl(),
+    ctx.siteUrlSource(),
+    ctx.encryptionKey(),
+  ]);
 
   return {
     connected: oauth === '1' && Boolean(secret),
@@ -55,9 +71,13 @@ export async function getStatus(ctx: BrandAgentContext): Promise<BrandAgentStatu
     siteId,
     advertiserId,
     connectedAt,
-    siteUrl: ctx.siteUrl,
-    clientId: normalizeSiteUrl(ctx.siteUrl),
-    encryptionKeyConfigured: Boolean(ctx.encryptionKey),
+    siteUrl: siteUrl ?? '',
+    siteUrlSource,
+    // Locked once a credential exists: the client id is derived from it.
+    siteUrlLocked: siteUrlSource === 'config' || Boolean(secret),
+    clientId: siteUrl ? normalizeSiteUrl(siteUrl) : '',
+    encryptionKeyConfigured: Boolean(encryptionKey),
+    storage: ctx.storage.describe?.() ?? null,
   };
 }
 
@@ -99,6 +119,15 @@ export async function consumeConnectNonce(ctx: BrandAgentContext, nonce: string)
  * this call is still in flight, from the public internet, on `siteUrl`.
  */
 export async function connect(ctx: BrandAgentContext): Promise<BrandAgentConnectResult> {
+  const siteUrl = await ctx.siteUrl();
+  if (!siteUrl) {
+    return {
+      success: false,
+      error: 'No site URL confirmed yet: the dashboard has to know which domain to call back.',
+      errorCode: 'missing_site_url',
+    };
+  }
+
   const projectId = await getProjectId(ctx);
   if (!projectId) {
     return { success: false, error: 'No Clarity project id configured.', errorCode: 'missing_project_id' };
@@ -108,7 +137,7 @@ export async function connect(ctx: BrandAgentContext): Promise<BrandAgentConnect
   await storeConnectNonce(ctx, connectNonce);
 
   const body = JSON.stringify({
-    storeUrl: ctx.siteUrl,
+    storeUrl: siteUrl,
     clarityProjectId: projectId,
     wordpressSiteId: await getSiteId(ctx),
     connectNonce,
@@ -176,7 +205,7 @@ export async function connect(ctx: BrandAgentContext): Promise<BrandAgentConnect
   const advertiserId = typeof data.advertiserId === 'string' ? data.advertiserId : null;
   if (advertiserId) await ctx.storage.set(KEYS.advertiserId, advertiserId);
 
-  ctx.log('brand-agent: connected', { siteUrl: ctx.siteUrl });
+  ctx.log('brand-agent: connected', { siteUrl });
   return { success: true, advertiserId };
 }
 

@@ -97,6 +97,23 @@ A complete, copy-pasteable app lives in [`examples/app-router`](./examples/app-r
 
 ### 1. Configure the agent
 
+Nothing is required to start:
+
+```ts
+// brand-agent.ts
+import { createBrandAgent } from '@mediastarweb/next-clarity-brand-agent';
+
+export const brandAgent = createBrandAgent();
+```
+
+That gets you a working panel: the state goes to `.data/brand-agent.json`, the
+at-rest key is minted next to it, and the first time you open the panel it asks
+you to confirm the domain — the same thing WordPress does during its install,
+where `home_url` and the salts are written for you and the plugin inherits them.
+
+For anything you actually deploy, pin the two facts the process cannot know —
+where a volume is mounted, and how many proxies are in front of it:
+
 ```ts
 // brand-agent.ts
 import { createAdminAuth, createBrandAgent, fileStorage, sitemapContentProvider } from '@mediastarweb/next-clarity-brand-agent';
@@ -330,10 +347,10 @@ Two deliberate deviations from the plugin, both hardening:
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `siteUrl` | *(required)* | Public origin, no trailing slash. The identity you register and the origin the loopback hits. |
-| `storage` | *(required)* | Where the connection lives. See below. |
+| `siteUrl` | *(confirmed from the panel)* | Public origin, no trailing slash. The identity you register and the origin the loopback hits. Left out, the panel proposes the origin you opened it on and you confirm it once; either way it is frozen while connected, because the credential is bound to it. |
+| `storage` | `fileStorage()` → `.data/brand-agent.json` | Where the connection lives. See below — the default is convenient, not durable: point it at a mounted volume. |
 | `clarityProjectId` | — | Your Clarity project id. Can also be linked from the panel. |
-| `encryptionKey` | — | AES-256-CBC key for the secret at rest. `null` stores it in clear. |
+| `encryptionKey` | *(minted by the storage)* | AES-256-CBC key for the secret at rest. `fileStorage` mints one into a sibling `.key` file (mode 0600), so a leaked state dump is not a credential; an adapter without that capability stores the secret in clear and says so through `logger`. `null` asks for clear storage deliberately. |
 | `content` | — | Content provider. Without one, content endpoints return empty. |
 | `allowedContentTypes` | `['post','page']` | Types the backend may request. |
 | `rateLimit` | `{ max: 120, windowMs: 60000 }`, **keying required** | Per-IP limit on the public widget endpoints. It has to know who is calling, so one of these is required: `trustProxy`, the number of proxies of yours that append to `X-Forwarded-For` (`1` behind a single one) — the address is read that many entries from the right, so a caller cannot pick their own key, and a chain shorter than that yields no key rather than a caller-chosen one; `clientIp: (request) => ...`, to take the address from your host; or `rateLimit: false`, to serve the endpoints unthrottled. Neither throws at startup. `createAdminAuth` takes the same `trustProxy`/`clientIp` for the login throttle. |

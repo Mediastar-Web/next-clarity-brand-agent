@@ -21,7 +21,8 @@ import type { BrandAgentStatus } from './types.js';
  * the dashboard is unreachable.
  */
 
-type AdminStatus = BrandAgentStatus;
+/** The status, plus what only the admin API can add to it. */
+type AdminStatus = BrandAgentStatus & { siteUrlSuggestion?: string };
 
 export interface BrandAgentAdminProps {
   /** Admin API route (`createAdminHandlers`). */
@@ -75,6 +76,17 @@ const styles = {
     fontSize: 13,
     minWidth: 200,
   },
+  notice: {
+    border: '1px solid rgba(255,159,10,0.4)',
+    background: 'rgba(255,159,10,0.1)',
+    borderRadius: 10,
+    padding: '12px 14px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+  },
+  noticeTitle: { fontSize: 13, fontWeight: 600 },
+  noticeBody: { fontSize: 12.5, lineHeight: 1.55, opacity: 0.85 },
   iframe: { width: '100%', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 12, background: '#fff' },
   log: { fontSize: 12, lineHeight: 1.6, maxHeight: 150, overflowY: 'auto', opacity: 0.85 },
 } as const satisfies Record<string, CSSProperties>;
@@ -111,6 +123,7 @@ export function BrandAgentAdmin({
   const [busy, setBusy] = useState(false);
   const [password, setPassword] = useState('');
   const [projectDraft, setProjectDraft] = useState('');
+  const [siteUrlDraft, setSiteUrlDraft] = useState('');
   const [log, setLog] = useState<LogEntry[]>([]);
   const [authInfo, setAuthInfo] = useState<AuthInfo | null>(null);
   const [setupToken, setSetupToken] = useState('');
@@ -150,6 +163,9 @@ export function BrandAgentAdmin({
       const next = (await res.json()) as AdminStatus;
       setStatus(next);
       setProjectDraft(next.projectId ?? '');
+      // Prefilled with the origin this page was served from, so confirming the
+      // domain is one click in the ordinary case.
+      setSiteUrlDraft((current) => current || next.siteUrl || next.siteUrlSuggestion || '');
       setState('ready');
     } catch {
       setState('error');
@@ -405,6 +421,45 @@ export function BrandAgentAdmin({
         </div>
       </div>
 
+      {!status.siteUrl && (
+        <div style={styles.notice}>
+          <div style={styles.noticeTitle}>Confirm the domain this site answers on</div>
+          <div style={styles.noticeBody}>
+            It is the identity registered with Microsoft and the origin the Clarity dashboard calls back to prove
+            you own the site, so it has to be the public URL, reachable from the internet — not a preview or a
+            tunnel. It is frozen once you connect: the credential is bound to it.
+          </div>
+          <div style={styles.row}>
+            <input
+              style={{ ...styles.input, minWidth: 280 }}
+              value={siteUrlDraft}
+              onChange={(event) => setSiteUrlDraft(event.target.value)}
+              placeholder="https://example.com"
+              aria-label="Site URL"
+            />
+            <button
+              style={styles.button}
+              onClick={() => void act('set-site-url', { siteUrl: siteUrlDraft })}
+              disabled={busy || !siteUrlDraft}
+            >
+              Confirm
+            </button>
+          </div>
+        </div>
+      )}
+
+      {status.storage?.ephemeral && (
+        <div style={styles.notice}>
+          <div style={styles.noticeTitle}>Check that this survives a redeploy</div>
+          <div style={styles.noticeBody}>
+            The connection is stored in <code>{status.storage.location}</code>, inside the working directory. If
+            this host rebuilds its filesystem on every release — most container platforms do — the HMAC secret
+            goes with it and the site has to connect again. Point <code>storage</code> at a mounted volume to be
+            sure. Nothing here can tell from the inside, so treat this as a question, not a verdict.
+          </div>
+        </div>
+      )}
+
       <div style={styles.grid}>
         <Field label="Site URL" value={status.siteUrl} />
         <Field label="Client ID" value={status.clientId} />
@@ -415,7 +470,7 @@ export function BrandAgentAdmin({
       </div>
 
       <div style={styles.row}>
-        <button style={styles.button} onClick={() => void act('connect')} disabled={busy}>
+        <button style={styles.button} onClick={() => void act('connect')} disabled={busy || !status.siteUrl}>
           {status.connected ? 'Reconnect' : 'Connect'}
         </button>
         <button style={styles.button} onClick={() => void act('disconnect')} disabled={busy || !status.connected}>

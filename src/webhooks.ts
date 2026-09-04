@@ -35,9 +35,12 @@ export async function dispatchContentWebhook(
   event: ContentEvent,
   body: string,
 ): Promise<{ ok: boolean; status?: number; error?: string }> {
+  const siteUrl = await ctx.siteUrl();
+  if (!siteUrl) return { ok: false, error: 'No site URL confirmed.' };
+
   const pathAndQuery =
     `${CONTENT_WEBHOOK_BASE_PATH}content/${encodeURIComponent(event)}` +
-    `?store_url=${encodeURIComponent(ctx.siteUrl)}`;
+    `?store_url=${encodeURIComponent(siteUrl)}`;
 
   try {
     const res = await signedBackendPost(ctx, pathAndQuery, body);

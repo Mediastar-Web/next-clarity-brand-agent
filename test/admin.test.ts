@@ -353,3 +353,73 @@ test('an unknown client IP is never throttled into a shared bucket', () => {
   assert.equal(limiter.limited('1.2.3.4'), false);
   assert.equal(limiter.limited('1.2.3.4'), true);
 });
+
+// ── First-run: confirming the domain ───────────────────────────────────────
+
+test('the domain is confirmed once, changeable until connected, frozen after', async () => {
+  const ctx = resolveConfig({ storage: memoryStorage(), encryptionKey: 'k', rateLimit: false });
+
+  assert.equal(await ctx.siteUrl(), null);
+  assert.equal(await ctx.siteUrlSource(), 'none');
+
+  // Not a domain we could ever answer on.
+  for (const bad of ['', 'example.com', 'ftp://example.com', 'https://user:pw@example.com', 'https://e.com/?a=1']) {
+    assert.equal((await ctx.claimSiteUrl(bad)).ok, false, bad);
+  }
+
+  assert.deepEqual(await ctx.claimSiteUrl('https://example.com/'), { ok: true, siteUrl: 'https://example.com' });
+  assert.equal(await ctx.siteUrl(), 'https://example.com');
+  assert.equal(await ctx.siteUrlSource(), 'storage');
+
+  // A wrong first guess is correctable, right up until a credential exists.
+  assert.equal((await ctx.claimSiteUrl('https://right.example')).ok, true);
+
+  await setHmacSecret(ctx, 'test-secret');
+  const refused = await ctx.claimSiteUrl('https://moved.example');
+  assert.equal(refused.ok, false);
+  assert.match(refused.error ?? '', /Disconnect first/);
+  assert.equal(await ctx.siteUrl(), 'https://right.example');
+});
+
+test('a configured site URL cannot be claimed away', async () => {
+  const ctx = resolveConfig({ siteUrl: 'https://pinned.example', storage: memoryStorage(), rateLimit: false });
+
+  assert.equal(await ctx.siteUrlSource(), 'config');
+  assert.equal((await ctx.claimSiteUrl('https://elsewhere.example')).ok, false);
+  assert.equal(await ctx.siteUrl(), 'https://pinned.example');
+});
+
+test('the panel proposes the origin it was opened on, and connect waits for it', async () => {
+  const ctx = resolveConfig({ storage: memoryStorage(), rateLimit: false });
+  const { GET, POST } = createAdminHandlers(ctx, { authorize: () => true });
+
+  const opened = new Request('https://internal.local/api/admin/brand-agent', {
+    headers: { 'x-forwarded-host': 'www.example.com', 'x-forwarded-proto': 'https' },
+  });
+  const before = (await (await GET(opened)).json()) as Record<string, unknown>;
+
+  assert.equal(before.siteUrl, '');
+  assert.equal(before.siteUrlSuggestion, 'https://www.example.com');
+
+  // Connecting without a domain fails on its own terms, not with a 500.
+  const early = await POST(
+    new Request('https://internal.local/api/admin/brand-agent', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'connect' }),
+    }),
+  );
+  assert.equal(((await early.json()) as Record<string, unknown>).errorCode, 'missing_site_url');
+
+  const confirmed = await POST(
+    new Request('https://internal.local/api/admin/brand-agent', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'set-site-url', siteUrl: before.siteUrlSuggestion }),
+    }),
+  );
+  assert.equal(confirmed.status, 200);
+
+  const after = (await (await GET(opened)).json()) as Record<string, unknown>;
+  assert.equal(after.siteUrl, 'https://www.example.com');
+  assert.equal(after.siteUrlSuggestion, '');
+  assert.equal(after.clientId, 'www-example-com');
+});

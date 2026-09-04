@@ -1,4 +1,4 @@
-import { PROXY_BASE_PATH, type BrandAgentContext } from './config.js';
+import { PROXY_BASE_PATH, normalizeSiteUrlInput, type BrandAgentContext } from './config.js';
 import { buildEmbedUrl, embedOrigin, isValidProjectId } from './embed.js';
 import { getHmacSecret, verifyIncomingSignature } from './crypto.js';
 import { signedBackendGet } from './backend.js';
@@ -47,6 +47,22 @@ function noStore(response: Response): Response {
  */
 function rateLimited(ctx: BrandAgentContext, request: Request): boolean {
   return ctx.widgetRateLimiter?.limited(ctx.clientIp(request)) ?? false;
+}
+
+/**
+ * The origin this request reached us on, for the panel to propose as the site
+ * URL. Header-derived, therefore a *suggestion*: it is shown to a signed-in
+ * administrator who confirms it with a click, never adopted on its own.
+ */
+export function requestOrigin(request: Request): string {
+  const headers = request.headers;
+  const host = headers.get('x-forwarded-host') ?? headers.get('host') ?? '';
+  if (!host) return '';
+
+  const proto = headers.get('x-forwarded-proto')?.split(',')[0]?.trim() || new URL(request.url).protocol.replace(':', '');
+  const candidate = `${proto}://${host.split(',')[0]?.trim()}`;
+
+  return normalizeSiteUrlInput(candidate) ?? '';
 }
 
 /** Path under the proxy base, e.g. `api/config/read`. */
@@ -173,8 +189,9 @@ async function handleConfigUpdate(ctx: BrandAgentContext, request: Request): Pro
   if (!signature || !timestamp || !storeUrl) {
     return noStore(wpJsonError('Missing authentication headers', 401));
   }
-  if (storeUrl !== ctx.siteUrl) {
-    ctx.log('brand-agent: config/update store url mismatch', { expected: ctx.siteUrl, received: storeUrl });
+  const siteUrl = await ctx.siteUrl();
+  if (!siteUrl || storeUrl !== siteUrl) {
+    ctx.log('brand-agent: config/update store url mismatch', { expected: siteUrl, received: storeUrl });
     return noStore(wpJsonError('Store URL mismatch', 403));
   }
 
@@ -256,7 +273,7 @@ async function handleContentFetch(ctx: BrandAgentContext, request: Request): Pro
   if (!signature || !timestamp || !storeUrl) {
     return noStore(wpJsonError('Missing authentication headers', 401));
   }
-  if (storeUrl !== ctx.siteUrl) {
+  if (storeUrl !== (await ctx.siteUrl())) {
     return noStore(wpJsonError('Store URL mismatch', 403));
   }
 
@@ -385,8 +402,9 @@ export interface AdminHandlerOptions {
 
 /**
  * Admin API: `GET` returns the status, `POST {action}` drives the connection.
- * Actions: `connect`, `disconnect`, `set-project-id` (`projectId`),
- * `set-inject` (`enabled`, local override for testing), `sync-content`.
+ * Actions: `connect`, `disconnect`, `set-site-url` (`siteUrl`),
+ * `set-project-id` (`projectId`), `set-inject` (`enabled`, local override for
+ * testing), `sync-content`.
  */
 export function createAdminHandlers(
   ctx: BrandAgentContext,
@@ -409,11 +427,13 @@ export function createAdminHandlers(
       return noStore(
         Response.json({
           ...status,
+          // What the panel offers to confirm when no domain is set yet.
+          siteUrlSuggestion: status.siteUrl ? '' : requestOrigin(request),
           csrfToken,
           embedOrigin: embedOrigin(ctx.embedBaseUrl),
           embedUrl: buildEmbedUrl({
             embedBaseUrl: ctx.embedBaseUrl,
-            siteUrl: ctx.siteUrl,
+            siteUrl: status.siteUrl,
             siteId: await getSiteId(ctx),
             projectId: status.projectId,
             nonce: csrfToken ?? '',
@@ -458,6 +478,17 @@ export function createAdminHandlers(
         case 'disconnect': {
           const result = await disconnect(ctx);
           return noStore(Response.json({ ...result, status: await getStatus(ctx) }));
+        }
+
+        case 'set-site-url': {
+          // The first-run equivalent of WordPress writing `home_url` during
+          // its install: proposed by the panel, confirmed by a human, frozen
+          // once a credential is bound to it.
+          const candidate = typeof body.siteUrl === 'string' ? body.siteUrl : '';
+          const result = await ctx.claimSiteUrl(candidate);
+          if (!result.ok) return Response.json({ error: result.error }, { status: 400 });
+
+          return noStore(Response.json({ success: true, status: await getStatus(ctx) }));
         }
 
         case 'set-project-id': {

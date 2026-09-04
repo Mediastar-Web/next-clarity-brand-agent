@@ -12,6 +12,7 @@
  */
 
 import { resolveConfig, type BrandAgentContext } from './config.js';
+import { fileStorage } from './storage.js';
 import {
   buildSignedHeaders,
   getHmacSecret,
@@ -65,6 +66,11 @@ export interface BrandAgent {
   getSiteId(): Promise<string>;
   isConnected(): Promise<boolean>;
 
+  /** The site URL in force, or null while nobody has confirmed one. */
+  siteUrl(): Promise<string | null>;
+  /** Confirm the domain this site answers on. Refused once connected. */
+  claimSiteUrl(url: string): Promise<{ ok: boolean; siteUrl?: string; error?: string }>;
+
   handlers: {
     /** Mount on a catch-all under `/a/msba` (the path is fixed). */
     proxy: { GET: RouteHandler; POST: RouteHandler };
@@ -96,8 +102,12 @@ export interface BrandAgent {
   consumeConnectNonce(nonce: string): Promise<boolean>;
 }
 
-export function createBrandAgent(input: BrandAgentConfigInput): BrandAgent {
-  const ctx = resolveConfig(input);
+export function createBrandAgent(input: BrandAgentConfigInput = {}): BrandAgent {
+  // Nothing is required: the state goes where `fileStorage` puts it by default,
+  // the at-rest key is minted beside it, and the domain is confirmed once from
+  // the panel. Every one of those can still be pinned explicitly — see the
+  // README — and a real deployment should at least pin the storage path.
+  const ctx = resolveConfig({ ...input, storage: input.storage ?? fileStorage() });
 
   return {
     config: ctx,
@@ -110,6 +120,9 @@ export function createBrandAgent(input: BrandAgentConfigInput): BrandAgent {
     setProjectId: (id: string) => setProjectId(ctx, id),
     getSiteId: () => getSiteId(ctx),
     isConnected: async () => (await getStatus(ctx)).connected,
+
+    siteUrl: () => ctx.siteUrl(),
+    claimSiteUrl: (url: string) => ctx.claimSiteUrl(url),
 
     handlers: {
       proxy: createProxyHandlers(ctx),
@@ -173,7 +186,14 @@ export {
   staticContentProvider,
   type SitemapContentProviderOptions,
 } from './content.js';
-export { rawSearch, wpJsonError, wpJsonSuccess, type AdminHandlerOptions, type RouteHandler } from './handlers.js';
+export {
+  rawSearch,
+  requestOrigin,
+  wpJsonError,
+  wpJsonSuccess,
+  type AdminHandlerOptions,
+  type RouteHandler,
+} from './handlers.js';
 export type { ContentEvent };
 export type {
   BrandAgentConfigInput,
@@ -185,4 +205,5 @@ export type {
   BrandAgentLogger,
   BrandAgentStatus,
   BrandAgentStorage,
+  BrandAgentStorageInfo,
 } from './types.js';

@@ -1,16 +1,20 @@
 import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { resolveConfig } from '../src/config.js';
 import {
   buildCanonicalRequest,
   buildInboundMessage,
   buildSignedHeaders,
+  getHmacSecret,
   normalizeSiteUrl,
   setHmacSecret,
   verifyIncomingSignature,
 } from '../src/crypto.js';
-import { memoryStorage } from '../src/storage.js';
+import { fileStorage, memoryStorage } from '../src/storage.js';
 
 const SECRET = 'test-secret';
 const EMPTY_BODY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
@@ -134,4 +138,44 @@ test('verifyIncomingSignature accepts a fresh signature and rejects tampering', 
     .update(buildInboundMessage('https://example.com', stale, body))
     .digest('base64');
   assert.equal(await verifyIncomingSignature(ctx, staleSignature, stale, body), false);
+});
+
+// ── Zero-config: the key mints itself, apart from the state ────────────────
+
+test('fileStorage keeps the at-rest key in its own file, owner-readable only', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'brand-agent-'));
+  const path = join(dir, 'state.json');
+  const ctx = resolveConfig({ siteUrl: 'https://example.com', storage: fileStorage({ path }), rateLimit: false });
+
+  await setHmacSecret(ctx, SECRET);
+
+  const state = await readFile(path, 'utf8');
+  assert.ok(!state.includes(SECRET), 'the secret must not be stored in clear');
+
+  // The key is next to the state, not inside it: a leaked state file alone is
+  // not a usable credential.
+  const keyPath = join(dir, 'state.key');
+  assert.ok(!state.includes((await readFile(keyPath, 'utf8')).trim()));
+  assert.equal((await stat(keyPath)).mode & 0o777, 0o600);
+
+  // A second process over the same files reads the same key back.
+  const restarted = resolveConfig({ siteUrl: 'https://example.com', storage: fileStorage({ path }), rateLimit: false });
+  assert.equal(await getHmacSecret(restarted), SECRET);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('a storage that cannot keep a key stores the secret in clear, and says so', async () => {
+  const logs: string[] = [];
+  const ctx = resolveConfig({
+    siteUrl: 'https://example.com',
+    storage: memoryStorage(),
+    rateLimit: false,
+    logger: (message) => logs.push(message),
+  });
+
+  await setHmacSecret(ctx, SECRET);
+
+  assert.equal(await ctx.storage.get('brandagent_hmac_secret'), `plain:${SECRET}`);
+  assert.equal(logs.filter((line) => line.includes('stored in clear')).length, 1);
 });

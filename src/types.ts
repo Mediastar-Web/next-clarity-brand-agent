@@ -6,11 +6,39 @@
  * "plain WordPress" variant — the flow that works without WooCommerce.
  */
 
-/** Minimal async key/value store. Everything the connection needs lives here. */
+/**
+ * Minimal async key/value store. Everything the connection needs lives here.
+ *
+ * The two optional methods are capabilities, not requirements: an adapter that
+ * can keep a key *outside* the state it protects, or say where the state lives,
+ * lets the package configure itself instead of asking you for env vars. A
+ * three-method adapter stays perfectly valid — it just gets asked for less.
+ */
 export interface BrandAgentStorage {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
   delete(key: string): Promise<void>;
+
+  /**
+   * Read, or mint once, the key that encrypts the HMAC secret at rest — kept
+   * apart from the state, or it would be a lock taped to its own door.
+   * Implement it only if you have somewhere separate to put it.
+   */
+  encryptionKey?(): Promise<string>;
+
+  /** Where the state lives, for the panel to show. */
+  describe?(): BrandAgentStorageInfo;
+}
+
+export interface BrandAgentStorageInfo {
+  /** Human-readable location, e.g. a file path. */
+  location: string;
+  /**
+   * True when the location looks like it will not survive a redeploy. A guess,
+   * and shown as one: nothing in a process can know for certain whether its
+   * filesystem is ephemeral.
+   */
+  ephemeral: boolean;
 }
 
 /**
@@ -60,18 +88,32 @@ export interface BrandAgentConfigInput {
    * identity you present to Microsoft AND the origin the Clarity dashboard
    * calls back during connect, so it must be the real public domain, reachable
    * from the internet, without a trailing slash.
+   *
+   * Optional: leave it out and the panel proposes the origin you opened it on,
+   * for you to confirm once — the same way WordPress fixes `home_url` during
+   * its install. Confirmed or configured, it is frozen once the site connects:
+   * it is the HMAC client id, and changing it invalidates the credential.
    */
-  siteUrl: string;
+  siteUrl?: string;
 
   /** Clarity project id (the one from clarity.microsoft.com). */
   clarityProjectId?: string;
 
-  /** Where the connection state lives. Required — see `fileStorage()`. */
-  storage: BrandAgentStorage;
+  /**
+   * Where the connection state lives. Defaults to `fileStorage()`, which writes
+   * `.data/brand-agent.json` under the working directory — fine to start with,
+   * but point it at a persistent volume before you connect for real.
+   */
+  storage?: BrandAgentStorage;
 
   /**
    * Key used to encrypt the HMAC secret at rest (AES-256-CBC), mirroring what
-   * the plugin does with `wp_salt('auth')`. Pass `null` to store it in clear.
+   * the plugin does with `wp_salt('auth')`.
+   *
+   * Left out, the storage adapter is asked to mint and keep one (`fileStorage`
+   * puts it in a sibling `.key` file, mode 0600); an adapter without that
+   * capability stores the secret in clear and says so through `logger`. Pass
+   * `null` to ask for clear storage deliberately.
    */
   encryptionKey?: string | null;
 
@@ -142,10 +184,17 @@ export interface BrandAgentStatus {
   siteId: string | null;
   advertiserId: string | null;
   connectedAt: string | null;
+  /** The site URL in force, or `''` while nobody has confirmed one yet. */
   siteUrl: string;
+  /** Where it comes from: pinned in code, confirmed from the panel, or absent. */
+  siteUrlSource: 'config' | 'storage' | 'none';
+  /** Frozen because the credential is bound to it. */
+  siteUrlLocked: boolean;
   /** Normalized site URL: the HMAC client id. */
   clientId: string;
   encryptionKeyConfigured: boolean;
+  /** Where the state is kept, when the adapter can say. */
+  storage: BrandAgentStorageInfo | null;
   /** Ready-to-frame URL of the embedded Clarity dashboard, when a nonce is issued. */
   embedUrl?: string;
   /** Origin allowed to postMessage the admin panel. */

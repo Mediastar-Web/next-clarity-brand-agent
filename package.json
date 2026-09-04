@@ -1,6 +1,6 @@
 {
   "name": "@mediastarweb/next-clarity-brand-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Connect a Next.js site to the Microsoft Clarity Brand Agent, speaking the same protocol as the official WordPress plugin.",
   "keywords": [
     "next",
