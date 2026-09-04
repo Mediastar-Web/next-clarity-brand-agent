@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# Trusted publishing: npm exchanges this short-lived OIDC token for a
+# credential of its own, so there is no NPM_TOKEN in the repository to leak,
+# rotate, or forget — and no OTP prompt, because the identity is the workflow
+# itself rather than a person. Configure the publisher once, on npmjs.com:
+# package → Settings → Trusted publisher → this repository, workflow
+# `release.yml`.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      # Node 22 ships npm 10; trusted publishing needs 11.5.1 or newer.
+      - run: npm install -g npm@latest
+
+      - run: pnpm install --frozen-lockfile
+
+      # The same gates as CI: a tag must not publish what a pull request would
+      # have failed.
+      - run: pnpm typecheck
+      - run: pnpm test
+
+      - name: Tag matches the version in the manifest
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$manifest" ]; then
+            echo "tag v$tag does not match package.json $manifest" >&2
+            exit 1
+          fi
+
+      # `prepare` builds dist/ here, exactly as it does for a local publish.
+      - run: npm publish --access public --provenance
