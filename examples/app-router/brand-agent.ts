@@ -24,6 +24,13 @@ export const brandAgent = createBrandAgent({
     exclude: (url) => url.includes('/privacy') || url.includes('/cookie-policy'),
   }),
 
+  // The public widget endpoints are throttled per caller — but only once you
+  // say where the caller's address comes from. `1` is one reverse proxy of
+  // yours appending to `X-Forwarded-For` (Vercel, nginx, Traefik). Behind two,
+  // say 2; on a host that exposes the address some other way, pass
+  // `clientIp: (request) => request.headers.get('cf-connecting-ip')` instead.
+  rateLimit: { trustProxy: 1 },
+
   logger: (message, context) => console.log(message, context ?? {}),
 });
 
@@ -38,5 +45,12 @@ export const brandAgent = createBrandAgent({
  */
 export const adminAuth = createAdminAuth({
   password: process.env.BRAND_AGENT_ADMIN_PASSWORD,
+  // Must be the same secret `proxy.ts` verifies with when it is pinned:
+  // otherwise the panel signs cookies with the one generated into `storage`
+  // and the proxy — which cannot read storage — rejects every login it issues.
+  // Leave both this and BRAND_AGENT_ADMIN_PASSWORD unset for first-run setup;
+  // the proxy then steps aside and the route handlers do the checking.
+  sessionSecret: process.env.BRAND_AGENT_SESSION_SECRET,
   storage,
+  trustProxy: 1,
 });

@@ -11,7 +11,7 @@ import { memoryStorage } from '../src/storage.js';
 const SITE = 'https://example.com';
 
 async function connectedCtx(): Promise<BrandAgentContext> {
-  const ctx = resolveConfig({ siteUrl: SITE, storage: memoryStorage(), encryptionKey: 'unit-test-key' });
+  const ctx = resolveConfig({ siteUrl: SITE, storage: memoryStorage(), encryptionKey: 'unit-test-key', rateLimit: false });
   await setHmacSecret(ctx, 'test-secret');
   await ctx.storage.set(KEYS.oauthSuccess, '1');
   return ctx;
@@ -321,7 +321,8 @@ test('the widget endpoints are throttled per client IP', async () => {
     // Pinned to a dead address so the two allowed requests fail locally instead
     // of reaching out to Microsoft during the test run.
     backendBaseUrl: 'http://127.0.0.1:9',
-    rateLimit: { max: 2, windowMs: 60_000 },
+    // One proxy in front, so `x-forwarded-for` below is a usable key.
+    rateLimit: { max: 2, windowMs: 60_000, trustProxy: 1 },
   });
   await setHmacSecret(ctx, 'test-secret');
 

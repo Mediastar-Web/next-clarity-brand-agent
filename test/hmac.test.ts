@@ -16,7 +16,7 @@ const SECRET = 'test-secret';
 const EMPTY_BODY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 
 function ctxWith(siteUrl = 'https://example.com') {
-  return resolveConfig({ siteUrl, storage: memoryStorage(), encryptionKey: 'unit-test-key' });
+  return resolveConfig({ siteUrl, storage: memoryStorage(), encryptionKey: 'unit-test-key', rateLimit: false });
 }
 
 test('normalizeSiteUrl matches the WordPress/backend normalization', () => {

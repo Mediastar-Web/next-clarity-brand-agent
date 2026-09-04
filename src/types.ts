@@ -102,8 +102,22 @@ export interface BrandAgentConfigInput {
   /**
    * Rate limit for the public widget endpoints (`config/read`, `v1/init`),
    * per client IP. Defaults to 120 requests/minute; `false` disables it.
+   *
+   * It needs a key, and getting one takes a decision only you can make, so it
+   * is **required**: set `trustProxy` to the number of proxies of yours that
+   * append to `X-Forwarded-For` (1 for a single one) so the address is read
+   * past them, or `clientIp` to take it from your host — or pass `false` here
+   * to serve the widget endpoints unthrottled. Configuring neither throws,
+   * rather than leaving a limiter that quietly keys off nothing.
    */
-  rateLimit?: { max?: number; windowMs?: number } | false;
+  rateLimit?:
+    | {
+        max?: number;
+        windowMs?: number;
+        trustProxy?: boolean | number;
+        clientIp?: (request: Request) => string | null | undefined;
+      }
+    | false;
 
   /** Version string reported by `api/config/status` (the plugin reports its own). */
   pluginVersion?: string;

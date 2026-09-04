@@ -1,5 +1,12 @@
 import { DEFAULT_EMBED_BASE_URL } from './embed.js';
-import { createRateLimiter, type RateLimiter } from './rate-limit.js';
+import {
+  assertClientIpOptions,
+  clientIp as resolveClientIp,
+  createRateLimiter,
+  hasClientIpSource,
+  type ClientIpOptions,
+  type RateLimiter,
+} from './rate-limit.js';
 import type { BrandAgentConfigInput, BrandAgentContentProvider, BrandAgentLogger, BrandAgentStorage } from './types.js';
 
 /** Storage keys. Names match the plugin's WordPress options where one exists. */
@@ -60,6 +67,8 @@ export interface BrandAgentContext {
   embedBaseUrl: string;
   pluginVersion: string;
   widgetRateLimiter: RateLimiter | null;
+  /** Rate-limit key for a request: the client IP, as far as it can be trusted. */
+  clientIp: (request: Request) => string;
   log: BrandAgentLogger;
 }
 
@@ -72,6 +81,23 @@ export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
   if (!siteUrl) throw new Error('next-clarity-brand-agent: `siteUrl` is required.');
   if (!input.storage) throw new Error('next-clarity-brand-agent: `storage` is required.');
 
+  const log = input.logger ?? (() => {});
+  const rateLimit = input.rateLimit === false ? null : (input.rateLimit ?? {});
+  const ipOptions: ClientIpOptions = { trustProxy: rateLimit?.trustProxy, resolve: rateLimit?.clientIp };
+
+  if (rateLimit) assertClientIpOptions(ipOptions, 'next-clarity-brand-agent: `rateLimit.trustProxy`');
+
+  // A limiter with no key is indistinguishable from a working one until
+  // someone spends the quota, and a warning through a logger that defaults to
+  // a no-op is no better than silence. So the choice has to be made here:
+  // either say where the caller's address comes from, or say out loud that the
+  // public endpoints are served unthrottled.
+  if (rateLimit && !hasClientIpSource(ipOptions)) {
+    throw new Error(
+      'next-clarity-brand-agent: rate limiting needs a client address to key on. Set `rateLimit.trustProxy` (1 behind a single reverse proxy) or `rateLimit.clientIp`, or pass `rateLimit: false` to serve the widget endpoints unthrottled.',
+    );
+  }
+
   return {
     siteUrl,
     clarityProjectId: (input.clarityProjectId ?? '').trim(),
@@ -83,14 +109,11 @@ export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
     backendBaseUrl: input.backendBaseUrl ? trimTrailingSlashes(input.backendBaseUrl.trim()) : null,
     frontendInjectionUrl: input.frontendInjectionUrl?.trim() || DEFAULT_FRONTEND_INJECTION_URL,
     embedBaseUrl: trimTrailingSlashes(input.embedBaseUrl?.trim() || DEFAULT_EMBED_BASE_URL),
-    widgetRateLimiter:
-      input.rateLimit === false
-        ? null
-        : createRateLimiter({
-            max: input.rateLimit?.max ?? 120,
-            windowMs: input.rateLimit?.windowMs ?? 60_000,
-          }),
+    widgetRateLimiter: rateLimit
+      ? createRateLimiter({ max: rateLimit.max ?? 120, windowMs: rateLimit.windowMs ?? 60_000 })
+      : null,
+    clientIp: (request: Request) => resolveClientIp(request, ipOptions),
     pluginVersion: input.pluginVersion?.trim() || '1.0.0',
-    log: input.logger ?? (() => {}),
+    log,
   };
 }

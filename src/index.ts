@@ -148,7 +148,13 @@ export {
 } from './config.js';
 export { fileStorage, memoryStorage } from './storage.js';
 export { createAdminAuth, type AdminAuth, type AdminAuthOptions } from './auth.js';
-export { createRateLimiter, clientIp, type RateLimiter, type RateLimitOptions } from './rate-limit.js';
+export {
+  createRateLimiter,
+  clientIp,
+  type ClientIpOptions,
+  type RateLimiter,
+  type RateLimitOptions,
+} from './rate-limit.js';
 export {
   DEFAULT_EMBED_BASE_URL,
   MessageOperation,

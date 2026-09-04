@@ -26,6 +26,9 @@ export function staticContentProvider(
   };
 }
 
+/** Redirect hops followed while fetching one page, each re-checked. */
+const MAX_REDIRECTS = 5;
+
 export interface SitemapContentProviderOptions {
   /** Absolute URL of the sitemap. Default: `${siteUrl}/sitemap.xml`. */
   sitemapUrl?: string;
@@ -59,7 +62,25 @@ export function sitemapContentProvider(options: SitemapContentProviderOptions): 
   const type = options.type ?? 'page';
   const revalidate = options.revalidate ?? 3600;
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const origin = new URL(siteUrl).origin;
   const author = options.author ?? new URL(siteUrl).hostname;
+
+  /**
+   * A sitemap entry is only followed when it is an HTTP(S) URL on the
+   * configured origin. Every location here is fetched server-side, so a
+   * malformed or tampered sitemap would otherwise turn this provider into a
+   * request forwarder for internal hosts — and index whatever came back.
+   */
+  function sameOrigin(loc: string): boolean {
+    let url: URL;
+    try {
+      url = new URL(loc);
+    } catch {
+      return false;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    return url.origin === origin;
+  }
 
   async function entries(): Promise<{ url: string; lastmod: string | null }[]> {
     const res = await fetch(sitemapUrl, {
@@ -75,6 +96,7 @@ export function sitemapContentProvider(options: SitemapContentProviderOptions): 
     for (const block of xml.split('<url>').slice(1)) {
       const loc = /<loc>([^<]+)<\/loc>/.exec(block)?.[1]?.trim();
       if (!loc) continue;
+      if (!sameOrigin(loc)) continue;
       if (options.exclude?.(loc)) continue;
       found.push({ url: loc, lastmod: /<lastmod>([^<]+)<\/lastmod>/.exec(block)?.[1]?.trim() ?? null });
     }
@@ -82,15 +104,50 @@ export function sitemapContentProvider(options: SitemapContentProviderOptions): 
     return found;
   }
 
-  async function toItem(entry: { url: string; lastmod: string | null }): Promise<BrandAgentContentItem | null> {
-    let html: string;
-    try {
-      const res = await fetch(entry.url, {
+  /**
+   * Fetch one page, following redirects by hand.
+   *
+   * `fetch` follows them on its own and checks nothing on the way, so a
+   * same-origin entry answering `302 Location: http://169.254.169.254/...`
+   * would sail straight past the check above and be indexed. Every hop is
+   * resolved and re-checked here instead, and the chain is bounded.
+   */
+  async function fetchPage(url: string): Promise<Response | null> {
+    let current = url;
+
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+      const res = await fetch(current, {
         headers: { Accept: 'text/html', 'User-Agent': 'BrandAgent-Next/1.0' },
+        redirect: 'manual',
         signal: AbortSignal.timeout(timeoutMs),
         next: { revalidate },
       } as RequestInit);
-      if (!res.ok) return null;
+
+      if (res.status < 300 || res.status >= 400) return res.ok ? res : null;
+
+      const location = res.headers.get('location');
+      if (!location) return null;
+
+      // Relative targets are the common case (`/about/`), so resolve against
+      // the URL that answered before deciding whether it is still ours.
+      let next: string;
+      try {
+        next = new URL(location, current).toString();
+      } catch {
+        return null;
+      }
+      if (!sameOrigin(next)) return null;
+      current = next;
+    }
+
+    return null;
+  }
+
+  async function toItem(entry: { url: string; lastmod: string | null }): Promise<BrandAgentContentItem | null> {
+    let html: string;
+    try {
+      const res = await fetchPage(entry.url);
+      if (!res) return null;
       html = await res.text();
     } catch {
       return null;

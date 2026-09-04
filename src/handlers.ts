@@ -1,6 +1,5 @@
 import { PROXY_BASE_PATH, type BrandAgentContext } from './config.js';
 import { buildEmbedUrl, embedOrigin, isValidProjectId } from './embed.js';
-import { clientIp } from './rate-limit.js';
 import { getHmacSecret, verifyIncomingSignature } from './crypto.js';
 import { signedBackendGet } from './backend.js';
 import { connect, consumeConnectNonce, disconnect, getProjectId, getSiteId, getStatus, setProjectId } from './connect.js';
@@ -47,7 +46,7 @@ function noStore(response: Response): Response {
  * limiter keeps a stranger from spending the site's Brand Agent quota.
  */
 function rateLimited(ctx: BrandAgentContext, request: Request): boolean {
-  return ctx.widgetRateLimiter?.limited(clientIp(request)) ?? false;
+  return ctx.widgetRateLimiter?.limited(ctx.clientIp(request)) ?? false;
 }
 
 /** Path under the proxy base, e.g. `api/config/read`. */
@@ -276,7 +275,11 @@ async function handleContentFetch(ctx: BrandAgentContext, request: Request): Pro
   }
 
   const requested = Array.isArray(body.types) ? body.types.map(String) : [];
-  const types = requested.filter((type) => ctx.allowedContentTypes.includes(type));
+  const allowed = requested.filter((type) => ctx.allowedContentTypes.includes(type));
+  // An empty list means "no filter" to a content provider, so an omitted or
+  // fully disallowed `types` must fall back to the allow-list itself — not to
+  // `[]`, which would hand back every type the provider knows.
+  const types = allowed.length > 0 ? allowed : ctx.allowedContentTypes;
   const page = Math.max(1, Number(body.page) || 1);
   const perPage = Math.min(100, Math.max(1, Number(body.per_page) || 50));
 

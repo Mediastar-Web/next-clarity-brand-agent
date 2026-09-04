@@ -7,16 +7,20 @@ export type ContentEvent = 'created' | 'updated' | 'deleted';
 
 /**
  * Whether incremental content webhooks should be emitted at all:
- * the site must be connected AND the agent must be published
- * (`BAInjectFrontendScript === 'true'`, flipped by the backend at go-live).
+ * the site must be connected, the agent must not be switched off, and it must
+ * be published (`BAInjectFrontendScript === 'true'`, flipped by the backend at
+ * go-live).
  *
  * Before publish there is no document index to apply changes to, so anything
- * sent earlier is dropped on the other side; when the agent is disabled the
- * flag flips back and emission stops.
+ * sent earlier is dropped on the other side. The agent switch is checked here
+ * too: `AGENT_ENABLED_CHANGE` deliberately leaves `BAOauthSuccess` alone (so a
+ * working connection is never erased) and does not always clear the injection
+ * flag, so it is the only signal that the administrator turned the agent off.
  */
 export async function contentWebhooksEnabled(ctx: BrandAgentContext): Promise<boolean> {
   if (!(await getHmacSecret(ctx))) return false;
   if ((await ctx.storage.get(KEYS.oauthSuccess)) !== '1') return false;
+  if ((await ctx.storage.get(KEYS.agentEnabled)) === '0') return false;
   return (await ctx.storage.get(KEYS.injectScript)) === 'true';
 }
 
@@ -87,25 +91,35 @@ export async function syncAllContent(
     };
   }
 
-  const perPage = options.perPage ?? 25;
-  let page = 1;
+  // Clamped, not trusted: `Math.ceil(total / 0)` is Infinity, and a loop bound
+  // by that against a provider that never throws does not end. Same 1..100
+  // range the backend's own `per_page` is held to.
+  const requested = Math.floor(Number(options.perPage ?? 25));
+  const perPage = Number.isFinite(requested) && requested > 0 ? Math.min(100, requested) : 25;
   let sent = 0;
   let failed = 0;
+  let pages = 1;
 
   // Sequential on purpose: this is a background chore, and hammering the
   // backend from a marketing site buys nothing.
-  for (;;) {
+  //
+  // Termination follows the reported total, not `items.length`: a provider can
+  // legitimately return an empty page (the sitemap one does when every URL in
+  // that slice times out), and stopping there would silently abandon the rest
+  // of the site while still reporting success.
+  for (let page = 1; page <= pages; page += 1) {
     const { items, total } = await ctx.content.list({ page, perPage, types: [] });
-    if (items.length === 0) break;
+    if (page === 1) pages = Math.max(1, Math.ceil(total / perPage));
+
+    // Documents the provider promised for this page but did not produce.
+    const expected = Math.min(perPage, Math.max(0, total - (page - 1) * perPage));
+    failed += Math.max(0, expected - items.length);
 
     for (const item of items) {
       const result = await dispatchContentWebhook(ctx, 'updated', JSON.stringify(item));
       if (result.ok) sent += 1;
       else failed += 1;
     }
-
-    if (page * perPage >= total) break;
-    page += 1;
   }
 
   ctx.log('brand-agent: content sync finished', { sent, failed });

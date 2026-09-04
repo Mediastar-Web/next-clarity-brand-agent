@@ -15,23 +15,30 @@ export function sqliteStorage(options: {
 }): BrandAgentStorage {
   const table = options.table ?? 'brand_agent_state';
   let db: SqliteLike | null = options.database ?? null;
+  let ready = false;
 
   function handle(): SqliteLike {
-    if (db) return db;
+    if (db && ready) return db;
 
-    if (!options.path) {
-      throw new Error('sqliteStorage: pass either `database` or `path`.');
+    if (!db) {
+      if (!options.path) {
+        throw new Error('sqliteStorage: pass either `database` or `path`.');
+      }
+
+      // Required lazily so the dependency stays optional for everyone else.
+      const require_ = createRequire(import.meta.url);
+      const Database = require_('better-sqlite3') as new (path: string) => SqliteLike;
+      const opened = new Database(options.path);
+      opened.pragma?.('journal_mode = WAL');
+      opened.pragma?.('busy_timeout = 5000');
+      db = opened;
     }
 
-    // Required lazily so the dependency stays optional for everyone else.
-    const require_ = createRequire(import.meta.url);
-    const Database = require_('better-sqlite3') as new (path: string) => SqliteLike;
-    const opened = new Database(options.path);
-    opened.pragma?.('journal_mode = WAL');
-    opened.pragma?.('busy_timeout = 5000');
-    opened.exec(`CREATE TABLE IF NOT EXISTS ${table} (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
-    db = opened;
-    return opened;
+    // Also for a caller-supplied `database`: the table is ours, and nobody
+    // passing in their own connection is expected to have created it.
+    db.exec(`CREATE TABLE IF NOT EXISTS ${table} (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+    ready = true;
+    return db;
   }
 
   return {

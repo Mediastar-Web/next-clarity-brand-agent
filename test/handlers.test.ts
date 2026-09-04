@@ -33,6 +33,7 @@ async function connectedCtx(): Promise<BrandAgentContext> {
     storage: memoryStorage(),
     encryptionKey: 'unit-test-key',
     content: staticContentProvider([item(1, 'One'), item(2, 'Two'), item(3, 'Three')]),
+    rateLimit: false,
   });
   await setHmacSecret(ctx, SECRET);
   await ctx.storage.set(KEYS.oauthSuccess, '1');
@@ -154,7 +155,7 @@ test('config/read needs a clientId and a stored secret', async () => {
   const noClient = await GET(new Request(`${SITE}/a/msba/api/config/read`));
   assert.equal(noClient.status, 400);
 
-  const fresh = resolveConfig({ siteUrl: SITE, storage: memoryStorage(), encryptionKey: 'k' });
+  const fresh = resolveConfig({ siteUrl: SITE, storage: memoryStorage(), encryptionKey: 'k', rateLimit: false });
   const disconnected = await createProxyHandlers(fresh).GET(
     new Request(`${SITE}/a/msba/api/config/read?clientId=example-com`),
   );

@@ -22,6 +22,7 @@
   "license": "MIT",
   "author": "Mediastar Web",
   "type": "module",
+  "packageManager": "pnpm@11.24.0",
   "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { BrandAgentStorage } from './types.js';
 
@@ -51,7 +51,13 @@ export function fileStorage(options: { path?: string } = {}): BrandAgentStorage 
   async function persist(state: Record<string, string>): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
     const tmp = `${path}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
+    // The file holds the HMAC secret and the admin session secret, and the
+    // rename below makes this exact inode the live state file — so it is
+    // created owner-only rather than inheriting the process umask. `chmod`
+    // covers a temp file left behind by an earlier crash, whose mode
+    // `writeFile` would keep.
+    await writeFile(tmp, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
+    await chmod(tmp, 0o600);
     await rename(tmp, path);
   }
 

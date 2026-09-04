@@ -29,6 +29,13 @@
  */
 
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import {
+  assertClientIpOptions,
+  clientIp,
+  createRateLimiter,
+  hasClientIpSource,
+  type ClientIpOptions,
+} from './rate-limit.js';
 import type { BrandAgentStorage } from './types.js';
 
 /** Storage keys owned by this module. */
@@ -89,6 +96,15 @@ export interface AdminAuthOptions {
    * turn it off only when testing over plain HTTP.
    */
   secureCookie?: boolean;
+  /**
+   * How the login throttle identifies a caller. `X-Forwarded-For` is written by
+   * the caller, so `trustProxy` says how many proxies of your own append to it
+   * and the address is counted from the right; `clientIp` takes the address
+   * from your host instead. Same contract as the agent's `rateLimit` — and, as
+   * there, neither one set means the throttle has no key and stays inert.
+   */
+  trustProxy?: boolean | number;
+  clientIp?: (request: Request) => string | null | undefined;
 }
 
 export interface AdminAuthStatus {
@@ -190,12 +206,6 @@ function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-function clientIp(request: Request): string {
-  const forwarded = request.headers.get('x-forwarded-for');
-  if (forwarded) return forwarded.split(',')[0]?.trim() ?? '';
-  return request.headers.get('x-real-ip')?.trim() ?? '';
-}
-
 export function createAdminAuth(options: AdminAuthOptions = {}): AdminAuth {
   const envPassword = options.password?.trim() ?? '';
   const envSecret = options.sessionSecret?.trim() ?? '';
@@ -206,9 +216,39 @@ export function createAdminAuth(options: AdminAuthOptions = {}): AdminAuth {
   const secureCookie = options.secureCookie ?? process.env.NODE_ENV !== 'development';
   const log = options.logger ?? ((message: string) => console.info(message));
   const bootedAt = Date.now();
+  const ipOptions: ClientIpOptions = { trustProxy: options.trustProxy, resolve: options.clientIp };
+  assertClientIpOptions(ipOptions, 'createAdminAuth: `trustProxy`');
 
-  const attempts = new Map<string, number[]>();
+  // A password with nowhere to take a signing key from would accept the login
+  // and then reject the cookie it just handed out — an unescapable login loop.
+  // Refuse the configuration instead of shipping it.
+  if (envPassword && !envSecret && !storage) {
+    throw new Error(
+      'createAdminAuth: a `password` needs either a `sessionSecret` or a `storage` to keep a generated one in — sessions cannot be signed otherwise.',
+    );
+  }
+
+  // Same limiter as the widget endpoints: bounded buckets, swept map, and no
+  // timestamp recorded for a request that is already being rejected.
+  const attempts = createRateLimiter({ max: LOGIN_MAX_ATTEMPTS, windowMs: LOGIN_WINDOW_MS });
   let announced = false;
+  let warnedAboutKeys = false;
+
+  /**
+   * Throttle one attempt. Without a configured address source there is no key
+   * to throttle on and every attempt passes — said out loud the first time it
+   * happens, because an inert throttle is indistinguishable from a working one
+   * until someone is grinding passwords against it.
+   */
+  function throttled(request: Request): boolean {
+    if (!hasClientIpSource(ipOptions) && !warnedAboutKeys) {
+      warnedAboutKeys = true;
+      log(
+        'brand-agent: admin login throttling is inert — set `trustProxy` (1 behind a single proxy) or `clientIp` so attempts can be keyed to a caller',
+      );
+    }
+    return attempts.limited(clientIp(request, ipOptions));
+  }
 
   // ── Secrets ──────────────────────────────────────────────────────────────
 
@@ -280,17 +320,6 @@ export function createAdminAuth(options: AdminAuthOptions = {}): AdminAuth {
     const parts = [`${cookieName}=${value}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAge}`];
     if (secureCookie) parts.push('Secure');
     return parts.join('; ');
-  }
-
-  function rateLimited(ip: string): boolean {
-    // No IP means no reliable key; fail open rather than lock everyone out.
-    if (!ip) return false;
-
-    const now = Date.now();
-    const recent = (attempts.get(ip) ?? []).filter((time) => time > now - LOGIN_WINDOW_MS);
-    recent.push(now);
-    attempts.set(ip, recent);
-    return recent.length > LOGIN_MAX_ATTEMPTS;
   }
 
   // ── Setup token ──────────────────────────────────────────────────────────
@@ -404,7 +433,7 @@ export function createAdminAuth(options: AdminAuthOptions = {}): AdminAuth {
           );
         }
 
-        if (rateLimited(clientIp(request))) {
+        if (throttled(request)) {
           return Response.json({ error: 'Too many attempts. Try again later.' }, { status: 429 });
         }
 
@@ -424,7 +453,7 @@ export function createAdminAuth(options: AdminAuthOptions = {}): AdminAuth {
       },
 
       async PUT(request: Request): Promise<Response> {
-        if (rateLimited(clientIp(request))) {
+        if (throttled(request)) {
           return Response.json({ error: 'Too many attempts. Try again later.' }, { status: 429 });
         }
 

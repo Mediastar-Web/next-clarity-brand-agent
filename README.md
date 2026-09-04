@@ -102,18 +102,25 @@ A complete, copy-pasteable app lives in [`examples/app-router`](./examples/app-r
 import { createAdminAuth, createBrandAgent, fileStorage, sitemapContentProvider } from '@mediastarweb/next-clarity-brand-agent';
 
 const siteUrl = 'https://example.com';
+const storage = fileStorage({ path: '/data/brand-agent.json' });   // persistent volume
 
 export const brandAgent = createBrandAgent({
   siteUrl,                                  // must be the real public domain
   clarityProjectId: process.env.CLARITY_PROJECT_ID,
-  storage: fileStorage({ path: '/data/brand-agent.json' }),   // persistent volume
+  storage,
   encryptionKey: process.env.BRAND_AGENT_SECRET_KEY,          // openssl rand -base64 32
   content: sitemapContentProvider({ siteUrl }),
+  rateLimit: { trustProxy: 1 },             // one proxy in front; see below
 });
 
 export const adminAuth = createAdminAuth({
   password: process.env.BRAND_AGENT_ADMIN_PASSWORD,
+  // Only pinned secrets can be verified from `proxy.ts`/`middleware.ts`. Set
+  // both env vars, or neither — with a password pinned and no secret, sessions
+  // would be signed with the one in storage and the proxy would reject them.
   sessionSecret: process.env.BRAND_AGENT_SESSION_SECRET,
+  storage,                                  // also enables first-run setup
+  trustProxy: 1,
 });
 ```
 
@@ -329,7 +336,7 @@ Two deliberate deviations from the plugin, both hardening:
 | `encryptionKey` | — | AES-256-CBC key for the secret at rest. `null` stores it in clear. |
 | `content` | — | Content provider. Without one, content endpoints return empty. |
 | `allowedContentTypes` | `['post','page']` | Types the backend may request. |
-| `rateLimit` | `{ max: 120, windowMs: 60000 }` | Per-IP limit on the public widget endpoints. `false` disables. |
+| `rateLimit` | `{ max: 120, windowMs: 60000 }`, **keying required** | Per-IP limit on the public widget endpoints. It has to know who is calling, so one of these is required: `trustProxy`, the number of proxies of yours that append to `X-Forwarded-For` (`1` behind a single one) — the address is read that many entries from the right, so a caller cannot pick their own key, and a chain shorter than that yields no key rather than a caller-chosen one; `clientIp: (request) => ...`, to take the address from your host; or `rateLimit: false`, to serve the endpoints unthrottled. Neither throws at startup. `createAdminAuth` takes the same `trustProxy`/`clientIp` for the login throttle. |
 | `clarityServerUrl` | `https://clarity.microsoft.com` | Override for testing. |
 | `embedBaseUrl` | `https://clarity.microsoft.com/embed` | Panel iframe; its origin is the postMessage allow-list. |
 | `backendBaseUrl` | *(resolved)* | Pin the backend instead of discovering it. |
