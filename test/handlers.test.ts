@@ -403,7 +403,7 @@ test('overlapping connects are one connect, not two secrets', async () => {
   }
 });
 
-test('a stale connect lock is taken over, and its owner does not release the new one', async () => {
+test('a live connect lock refuses, an expired one is taken over', async () => {
   const storage = memoryStorage();
   const ctx = resolveConfig({ siteUrl: SITE, storage, encryptionKey: 'k', rateLimit: false });
 

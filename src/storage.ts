@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { BrandAgentStorage } from './types.js';
 
@@ -109,8 +109,38 @@ export function fileStorage(options: { path?: string } = {}): BrandAgentStorage 
     });
   }
 
+  /**
+   * Exclusive create, so two callers cannot both believe they claimed the key.
+   *
+   * A lock lives in its own file rather than in the state object: the state is
+   * read-modify-write through a cache, which is exactly what cannot decide a
+   * race. `wx` fails when the file exists, and that failure is the answer.
+   */
+  async function setIfAbsent(key: string, value: string): Promise<boolean> {
+    return enqueue(async () => {
+      await mkdir(dirname(path), { recursive: true });
+      try {
+        await writeFile(claimPath(key), value, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  /**
+   * A claimed key lives in its own file, not in the state object: the state is
+   * read-modify-write through a cache, which is precisely what cannot settle a
+   * race. `get` and `delete` below look here too, so a key claimed this way
+   * behaves like any other from the outside.
+   */
+  function claimPath(key: string): string {
+    return `${path}.${encodeURIComponent(key)}.claim`;
+  }
+
   return {
     encryptionKey,
+    setIfAbsent,
 
     describe() {
       // A guess, and labelled as one wherever it is shown: a path inside the
@@ -121,7 +151,14 @@ export function fileStorage(options: { path?: string } = {}): BrandAgentStorage 
     },
 
     async get(key) {
-      return (await load())[key] ?? null;
+      const stored = (await load())[key];
+      if (stored !== undefined) return stored;
+
+      try {
+        return await readFile(claimPath(key), 'utf8');
+      } catch {
+        return null;
+      }
     },
     async set(key, value) {
       await enqueue(async () => {
@@ -132,7 +169,11 @@ export function fileStorage(options: { path?: string } = {}): BrandAgentStorage 
     },
     async delete(key) {
       await enqueue(async () => {
+        await unlink(claimPath(key)).catch(() => undefined);
+
         const state = await load();
+        if (!(key in state)) return;
+
         delete state[key];
         await persist(state);
       });

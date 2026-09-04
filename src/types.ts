@@ -26,6 +26,21 @@ export interface BrandAgentStorage {
    */
   encryptionKey?(): Promise<string>;
 
+  /**
+   * Write `value` under `key` only if nothing is there, atomically, and say
+   * whether that succeeded. The missing primitive of a three-method store: with
+   * only `get` and `set`, "claim this if it is free" is two operations and two
+   * callers can both win.
+   *
+   * `fileStorage` implements it with an exclusive file create, which is the
+   * same trick the WordPress plugin uses with `INSERT IGNORE` on its options
+   * table. Implement it against `SET NX` (Redis), `INSERT ... ON CONFLICT DO
+   * NOTHING` (SQL) or your KV's compare-and-set if you can — the connect lock
+   * uses it, and without it two overlapping connects can leave Microsoft
+   * holding a secret this site never stored.
+   */
+  setIfAbsent?(key: string, value: string): Promise<boolean>;
+
   /** Where the state lives, for the panel to show. */
   describe?(): BrandAgentStorageInfo;
 }

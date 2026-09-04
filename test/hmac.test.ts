@@ -235,3 +235,25 @@ test('signed calls go out as WordPress does, and the visitor still wins on the p
   // …unless the caller is forwarding a real visitor, as the widget proxy does.
   assert.equal(seen[1]?.['user-agent'], 'Mozilla/5.0 (Visitor)');
 });
+
+test('fileStorage claims a key exclusively, and the claim behaves like any other key', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'brand-agent-'));
+  const storage = fileStorage({ path: join(dir, 'state.json') });
+
+  // Whoever gets there first wins, and the loser is told so — this is what a
+  // read-then-write cannot decide.
+  const claims = await Promise.all([
+    storage.setIfAbsent!('lock', 'first'),
+    storage.setIfAbsent!('lock', 'second'),
+    storage.setIfAbsent!('lock', 'third'),
+  ]);
+  assert.deepEqual(claims, [true, false, false]);
+
+  // From the outside it is an ordinary key.
+  assert.equal(await storage.get('lock'), 'first');
+  await storage.delete('lock');
+  assert.equal(await storage.get('lock'), null);
+  assert.equal(await storage.setIfAbsent!('lock', 'again'), true);
+
+  await rm(dir, { recursive: true, force: true });
+});

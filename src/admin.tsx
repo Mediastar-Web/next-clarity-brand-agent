@@ -119,15 +119,17 @@ function Chip({ label, tone }: { label: string; tone: 'ok' | 'warn' | 'off' }) {
 }
 
 /**
- * What the dashboard branches on, and what the iframe URL carries: the site it
- * speaks for, whether that site is connected, which project is linked, and
- * whether the agent is on. The CSRF nonce is deliberately not in here — it
- * changes on every status read, and following it reloaded the dashboard
- * constantly.
+ * Panel actions after which the dashboard has to read the site again, because
+ * they change something the iframe URL carries or something the dashboard shows
+ * as already done.
+ *
+ * An allow-list, not a diff of the status before and after. Comparing states
+ * meant asking "did anything change?", and a concurrent refresh could answer
+ * yes about a change the *dashboard* had just made itself — reloading it in the
+ * middle of its own flow. Naming the actions instead makes the reload depend
+ * only on which button was pressed here, which no other request can alter.
  */
-function embedKeyOf(status: AdminStatus): string {
-  return `${status.siteUrl}|${status.connected}|${status.projectId}|${status.agentEnabled}`;
-}
+const RELOADS_DASHBOARD = new Set(['connect', 'disconnect', 'set-site-url', 'set-project-id']);
 
 function Field({ label, value }: { label: string; value: string }) {
   return (
@@ -168,7 +170,6 @@ export function BrandAgentAdmin({
    * never moves it.
    */
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
-  const embedKeyRef = useRef('');
   const [log, setLog] = useState<LogEntry[]>([]);
   const [authInfo, setAuthInfo] = useState<AuthInfo | null>(null);
   const [setupToken, setSetupToken] = useState('');
@@ -213,11 +214,10 @@ export function BrandAgentAdmin({
       setSiteUrlDraft((current) => current || next.siteUrl || next.siteUrlSuggestion || '');
 
       // First load, and only that: from here on the iframe is reloaded by
-      // whoever asked for the change, never by a plain status read.
-      if (next.embedUrl && !embedKeyRef.current) {
-        embedKeyRef.current = embedKeyOf(next);
-        setEmbedUrl(next.embedUrl);
-      }
+      // whoever asked for the change, never by a plain status read. The
+      // functional form makes two refreshes racing each other harmless — the
+      // first one to arrive wins, the second is a no-op.
+      if (next.embedUrl) setEmbedUrl((current) => current ?? next.embedUrl ?? null);
 
       setState('ready');
       return next;
@@ -244,13 +244,7 @@ export function BrandAgentAdmin({
    * read or clear, and the key moves only when the URL does.
    */
   const reloadEmbed = useCallback((next: AdminStatus | null | undefined) => {
-    if (!next?.embedUrl) return;
-
-    const key = embedKeyOf(next);
-    if (key === embedKeyRef.current) return;
-
-    embedKeyRef.current = key;
-    setEmbedUrl(next.embedUrl);
+    if (next?.embedUrl) setEmbedUrl(next.embedUrl);
   }, []);
 
   useEffect(() => {
@@ -283,7 +277,8 @@ export function BrandAgentAdmin({
         // A nonce argument means the dashboard asked, and it is mid-flow;
         // anything else is a button here, and may move the iframe.
         void refresh().then((next) => {
-          if (nonce === undefined) reloadEmbed(next);
+          // A nonce argument means the dashboard asked, and it is mid-flow.
+          if (nonce === undefined && RELOADS_DASHBOARD.has(action)) reloadEmbed(next);
         });
       }
     },
