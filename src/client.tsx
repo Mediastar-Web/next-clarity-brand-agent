@@ -21,6 +21,20 @@ export interface BrandAgentWidgetProps {
  * static rendering for a value that changes once in a blue moon. So the check
  * happens client-side, after paint, against the same unauthenticated status
  * endpoint the plugin exposes.
+ *
+ * ── Consent ────────────────────────────────────────────────────────────────
+ * This loads a third-party module from Microsoft's CDN which then talks to
+ * Microsoft's backend about what the visitor is doing. Under the GDPR/ePrivacy
+ * regime that needs consent before it runs, so on a site with a cookie banner
+ * `enabled` must be driven by the visitor's choice — it is not something to
+ * leave at its default.
+ *
+ * Withdrawal is the part scripts cannot do honestly: once the module has run,
+ * setting `enabled` back to false removes the tag this component injected (so
+ * a later render cannot resurrect it) but cannot unload code that is already
+ * executing. Reload the page when consent is withdrawn. The injected tag is
+ * marked `script[data-brand-agent]`, so the host app can detect whether the
+ * agent ever loaded and only force a reload when it did.
  */
 export function BrandAgentWidget({
   statusPath = '/a/msba/api/config/status',
@@ -28,7 +42,13 @@ export function BrandAgentWidget({
   enabled = true,
 }: BrandAgentWidgetProps): null {
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      // Consent withdrawn (or the host turned the agent off): drop our tag so
+      // it cannot come back on a later render. Code already running stays
+      // running — only a reload truly stops it.
+      document.querySelector('script[data-brand-agent]')?.remove();
+      return;
+    }
 
     let cancelled = false;
 

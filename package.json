@@ -11,9 +11,20 @@
     "adsagent",
     "chat-agent"
   ],
+  "homepage": "https://github.com/Mediastar-Web/next-clarity-brand-agent#readme",
+  "bugs": {
+    "url": "https://github.com/Mediastar-Web/next-clarity-brand-agent/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mediastar-Web/next-clarity-brand-agent.git"
+  },
   "license": "MIT",
+  "author": "Mediastar Web",
   "type": "module",
   "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -78,6 +89,7 @@
   "engines": {
     "node": ">=20"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts"
+  "publishConfig": {
+    "access": "public"
+  }
 }

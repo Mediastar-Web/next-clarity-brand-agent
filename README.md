@@ -81,7 +81,7 @@ package cannot answer for you — it resolves by trying.
 ```bash
 npm install next-clarity-brand-agent
 # or straight from GitHub
-npm install github:enricoangelon/next-clarity-brand-agent
+npm install github:Mediastar-Web/next-clarity-brand-agent
 ```
 
 It ships compiled ESM plus type declarations, so there is nothing to configure
@@ -232,6 +232,30 @@ import { ClarityTag } from 'next-clarity-brand-agent/tag';
 loads nothing until the backend has published the agent; the check runs
 client-side, after paint, against `api/config/status` — deliberately, so a flag
 that changes once a month does not opt every page out of static rendering.
+
+**Consent.** The widget loads a third-party module from Microsoft's CDN, which
+then reports what the visitor is doing to Microsoft's backend. Where consent is
+required, `enabled` must follow the visitor's choice rather than its default:
+
+```tsx
+const consent = useYourCookieConsent();
+<BrandAgentWidget enabled={consent.thirdParty} />
+```
+
+Withdrawal is the part no script can do honestly. Flipping `enabled` back to
+false removes the tag this component injected, so a later render cannot bring it
+back, but code already running keeps running — **reload the page when consent is
+withdrawn**. The injected tag is marked `script[data-brand-agent]`, so you can
+tell whether the agent ever loaded and reload only when it did:
+
+```tsx
+useEffect(() => {
+  if (!granted && document.querySelector('script[data-brand-agent]')) window.location.reload();
+}, [granted]);
+```
+
+Disclosing the tool in your cookie policy is on you — it is a named third-party
+recipient, like any embedded chat.
 
 ### 6. Connect
 
