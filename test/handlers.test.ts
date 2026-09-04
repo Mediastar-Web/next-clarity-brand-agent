@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import test from 'node:test';
 import { KEYS, resolveConfig, type BrandAgentContext } from '../src/config.js';
-import { connect, getProjectId } from '../src/connect.js';
-import { buildInboundMessage, setHmacSecret, sha256Hex } from '../src/crypto.js';
+import { connect, getProjectId, setProjectId } from '../src/connect.js';
+import { buildInboundMessage, getHmacSecret, setHmacSecret, sha256Hex } from '../src/crypto.js';
 import { staticContentProvider } from '../src/content.js';
 import { createConnectVerifyHandler, createProxyHandlers } from '../src/handlers.js';
 import { memoryStorage } from '../src/storage.js';
@@ -363,4 +363,42 @@ test('the widget proxy presents itself as the plugin, and forwards the visitor',
 
   // Nobody to forward: what shows through is the plugin, not us.
   assert.equal(seen[1]?.['user-agent'], 'BrandAgent-WordPress-Plugin/1.0');
+});
+
+test('overlapping connects are one connect, not two secrets', async () => {
+  let calls = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    // Slow enough that the second caller arrives while the first is in flight.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    return new Response(JSON.stringify({ hmac_secret: `secret-${calls}` }), { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const ctx = resolveConfig({
+      siteUrl: SITE,
+      storage: memoryStorage(),
+      encryptionKey: 'k',
+      rateLimit: false,
+      clarityServerUrl: 'https://clarity.test',
+    });
+    await setProjectId(ctx, 'p1q2r3');
+
+    const [a, b] = await Promise.all([connect(ctx), connect(ctx)]);
+
+    // The dashboard mints a fresh secret on every round trip, so a second one
+    // would leave Microsoft holding a credential this site never stored.
+    assert.equal(calls, 1);
+    assert.equal(a.success, true);
+    assert.deepEqual(a, b);
+    assert.equal(await getHmacSecret(ctx), 'secret-1');
+
+    // The lock is released, so a later connect still works.
+    assert.equal((await connect(ctx)).success, true);
+    assert.equal(calls, 2);
+    assert.equal(await ctx.storage.get('brandagent_connect_lock'), null);
+  } finally {
+    globalThis.fetch = original;
+  }
 });

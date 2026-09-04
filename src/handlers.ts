@@ -296,8 +296,9 @@ async function handleConfigUpdate(ctx: BrandAgentContext, request: Request): Pro
     return noStore(wpJsonError('Missing BAInjectFrontendScript parameter', 400));
   }
 
+  // `verifyIncomingSignature` logs the reason; a second line here would only
+  // double what an anonymous caller can make us write.
   if (!(await verifyIncomingSignature(ctx, signature, timestamp, payload))) {
-    ctx.log('brand-agent: config/update signature rejected');
     return noStore(wpJsonError('Invalid signature', 401));
   }
 
@@ -354,7 +355,6 @@ async function handleContentFetch(ctx: BrandAgentContext, request: Request): Pro
 
   const rawBody = await request.text();
   if (!(await verifyIncomingSignature(ctx, signature, timestamp, rawBody))) {
-    ctx.log('brand-agent: content/fetch signature rejected');
     return noStore(wpJsonError('Invalid signature', 401));
   }
 
@@ -372,10 +372,18 @@ async function handleContentFetch(ctx: BrandAgentContext, request: Request): Pro
   // fully disallowed `types` must fall back to the allow-list itself — not to
   // `[]`, which would hand back every type the provider knows.
   const types = allowed.length > 0 ? allowed : ctx.allowedContentTypes;
-  // Whole numbers, like `absint()` on the WordPress side: a fractional `page`
-  // would slice a provider differently there and here.
-  const page = Math.max(1, Math.floor(Number(body.page)) || 1);
-  const perPage = Math.min(100, Math.max(1, Math.floor(Number(body.per_page)) || 50));
+  // Whole numbers, like `intval()` on the WordPress side: a fractional `page`
+  // would slice a provider differently there and here, and a field that is
+  // present but nonsense clamps to the bottom of the range rather than falling
+  // back to the default — `intval('nope')` is 0, and `max(1, 0)` is 1.
+  const whole = (value: unknown): number | null => {
+    if (value === undefined || value === null) return null;
+    const parsed = Math.floor(Number(value));
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const page = Math.max(1, whole(body.page) ?? 1);
+  const perPage = Math.min(100, Math.max(1, whole(body.per_page) ?? 50));
 
   if (!ctx.content) {
     return noStore(wpJsonSuccess({ page, per_page: perPage, total: 0, total_pages: 0, count: 0, items: [] }));

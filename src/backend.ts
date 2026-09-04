@@ -63,6 +63,10 @@ export async function signedBackendGet(
   if (!backend) throw new BrandAgentBackendUnavailableError();
 
   return fetch(`${backend}${pathAndQuery}`, {
+    cache: 'no-store',
+    // `init` first: it carries the caller's signal and the like, but must not
+    // be able to replace the signed header set with its own `headers`.
+    ...init,
     method: 'GET',
     // The WordPress identity is a default, not an override: the widget proxy
     // passes the visitor's own `User-Agent` through `extraHeaders`, exactly as
@@ -72,8 +76,6 @@ export async function signedBackendGet(
       ...extraHeaders,
       ...(await buildSignedHeaders(ctx, pathAndQuery, '', 'GET')),
     },
-    cache: 'no-store',
-    ...init,
   });
 }
 

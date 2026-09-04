@@ -25,6 +25,7 @@ export const KEYS = {
   backendUrlAt: 'brandagent_backend_url_at',
   noncePrefix: 'brandagent_connect_nonce_',
   siteUrl: 'brandagent_site_url',
+  connectLock: 'brandagent_connect_lock',
 } as const;
 
 /**
@@ -89,6 +90,14 @@ export const HMAC_TIMESTAMP_WINDOW_S = 300;
 
 /** How long a connect nonce stays spendable, matching the plugin's transient. */
 export const CONNECT_NONCE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * How long one connect may hold the lock. The plugin serializes connects with a
+ * per-site lock for the same reason: two overlapping round trips can leave
+ * Microsoft holding one secret and the site storing another, after which every
+ * signed call is a 401.
+ */
+export const CONNECT_LOCK_TTL_MS = 60 * 1000;
 
 /** Backend URL cache lifetime, matching the plugin's 24h transient. */
 export const BACKEND_URL_TTL_MS = 24 * 60 * 60 * 1000;

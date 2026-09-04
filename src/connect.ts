@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { CONNECT_NONCE_TTL_MS, KEYS, wordpressUserAgent, type BrandAgentContext } from './config.js';
+import {
+  CONNECT_LOCK_TTL_MS,
+  CONNECT_NONCE_TTL_MS,
+  KEYS,
+  wordpressUserAgent,
+  type BrandAgentContext,
+} from './config.js';
 import {
   clearHmacSecret,
   getHmacSecret,
@@ -135,7 +141,54 @@ export async function consumeConnectNonce(ctx: BrandAgentContext, nonce: string)
  * answers this request, so the app must be able to serve that callback while
  * this call is still in flight, from the public internet, on `siteUrl`.
  */
-export async function connect(ctx: BrandAgentContext): Promise<BrandAgentConnectResult> {
+/**
+ * One connect at a time, per context and per site.
+ *
+ * Two overlapping round trips are not two attempts at the same thing: the
+ * dashboard mints and commits a fresh secret on every one, so if the replies
+ * arrive out of order the site stores a credential Microsoft has already
+ * replaced, and every signed call after that is a 401 — including the config
+ * update that publishes the widget. The plugin holds a per-site lock here for
+ * exactly this reason.
+ *
+ * Two layers, because there are two ways to overlap: a promise shared by
+ * callers in this process (two clicks, or the dashboard and a button at once),
+ * and a short-lived marker in storage for everything else. The marker is
+ * read-then-write and therefore not atomic, the same weakness the plugin's
+ * transient has; it closes the window that matters without pretending to be a
+ * distributed lock.
+ */
+const inFlightConnects = new WeakMap<BrandAgentContext, Promise<BrandAgentConnectResult>>();
+
+export function connect(ctx: BrandAgentContext): Promise<BrandAgentConnectResult> {
+  const running = inFlightConnects.get(ctx);
+  if (running) return running;
+
+  const attempt = runConnect(ctx).finally(() => inFlightConnects.delete(ctx));
+  inFlightConnects.set(ctx, attempt);
+  return attempt;
+}
+
+async function runConnect(ctx: BrandAgentContext): Promise<BrandAgentConnectResult> {
+  const lockedUntil = Number((await ctx.storage.get(KEYS.connectLock)) ?? 0);
+  if (lockedUntil > Date.now()) {
+    ctx.log('brand-agent: connect already in progress');
+    return {
+      success: false,
+      error: 'A connect is already running. Wait for it to finish before starting another.',
+      errorCode: 'connect_in_progress',
+    };
+  }
+
+  await ctx.storage.set(KEYS.connectLock, String(Date.now() + CONNECT_LOCK_TTL_MS));
+  try {
+    return await performConnect(ctx);
+  } finally {
+    await ctx.storage.delete(KEYS.connectLock);
+  }
+}
+
+async function performConnect(ctx: BrandAgentContext): Promise<BrandAgentConnectResult> {
   const siteUrl = await ctx.siteUrl();
   if (!siteUrl) {
     return {

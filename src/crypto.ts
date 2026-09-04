@@ -214,7 +214,10 @@ export async function verifyIncomingSignature(
 
   const ts = Number.parseInt(timestamp, 10);
   if (!Number.isFinite(ts)) {
-    ctx.log('brand-agent: inbound signature refused: unparseable timestamp', { timestamp });
+    // Truncated: the value is attacker-chosen and lands in someone's log.
+    ctx.log('brand-agent: inbound signature refused: unparseable timestamp', {
+      timestamp: timestamp.slice(0, 32),
+    });
     return false;
   }
 
