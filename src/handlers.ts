@@ -133,8 +133,10 @@ async function upstreamExcerpt(upstream: Response): Promise<Record<string, strin
     while (received < LIMIT) {
       const { done, value } = await reader.read();
       if (done) break;
-      // A single chunk can be any size; keep only what fits in the budget.
-      const kept = value.byteLength > LIMIT - received ? value.subarray(0, LIMIT - received) : value;
+      // A single chunk can be any size; keep only what fits in the budget —
+      // as a copy, because `subarray` would keep the whole chunk's backing
+      // buffer alive for as long as the slice is.
+      const kept = value.slice(0, Math.min(value.byteLength, LIMIT - received));
       chunks.push(kept);
       received += kept.byteLength;
     }
@@ -171,7 +173,9 @@ async function upstreamExcerpt(upstream: Response): Promise<Record<string, strin
  * stays valid for five minutes into the log.
  */
 function redactTokens(value: string): string {
-  return value.replace(/[A-Za-z0-9+/_-]{24,}={0,2}/g, '[redacted]').slice(0, 160);
+  // 20, not 24: a 16-byte secret is 22 base64 characters plus padding, and
+  // the padding must not be what keeps it out of the match.
+  return value.replace(/[A-Za-z0-9+/_-]{20,}={0,2}/g, '[redacted]').slice(0, 160);
 }
 
 /** Path under the proxy base, e.g. `api/content/fetch`. */

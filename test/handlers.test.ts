@@ -441,19 +441,27 @@ test('an upstream refusal is logged by its fields, bounded, and never by its raw
   const { GET } = createProxyHandlers(ctx);
 
   const original = globalThis.fetch;
-  let mode: 'json' | 'endless' = 'json';
+  let mode: 'json' | 'endless' | 'silent' = 'json';
   globalThis.fetch = (async () => {
     if (mode === 'json') {
       // Echoes the request, the way a careless error page might.
       return new Response(
         JSON.stringify({
           error: 'agent_not_published',
-          // A message that quotes our own signature back, base64 and all.
-          message: 'Bad signature: dGhpcy1pcy1hLXNpZ25hdHVyZS1sb25nLWVub3VnaA== for client',
+          // A message that quotes our own signature back, base64 and all — and
+          // a 16-byte secret, which is only 22 characters plus padding.
+          message: 'Bad signature: dGhpcy1pcy1hLXNpZ25hdHVyZS1sb25nLWVub3VnaA== nonce c2l4dGVlbi1ieXRlcy0hIQ== for client',
           echo: 'X-WordPress-Signature: abc==',
         }),
-        { status: 401, headers: { 'content-type': 'application/json' } },
+        { status: 401, headers: { 'content-type': 'Application/JSON; charset=utf-8' } },
       );
+    }
+    if (mode === 'silent') {
+      // Open, and never says anything: only the timeout can end this read.
+      return new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) }), {
+        status: 401,
+        headers: { 'content-type': 'text/event-stream' },
+      });
     }
     // A stream that never ends and never says anything useful.
     // Endless, and in chunks far larger than the read budget.
@@ -471,7 +479,7 @@ test('an upstream refusal is logged by its fields, bounded, and never by its raw
     const [, json] = logs.find(([message]) => message.includes('config/read non-success')) ?? [];
     const upstream = json?.upstream as Record<string, string>;
     assert.equal(upstream.error, 'agent_not_published');
-    assert.equal(upstream.message, 'Bad signature: [redacted] for client', 'a token inside a message is redacted');
+    assert.equal(upstream.message, 'Bad signature: [redacted] nonce [redacted] for client', 'tokens inside a message are redacted');
     assert.equal(upstream.echo, undefined, 'unlisted fields must not reach the log');
     assert.ok(!JSON.stringify(json).includes('abc=='), 'nothing echoed from the request may be logged');
 
@@ -483,6 +491,12 @@ test('an upstream refusal is logged by its fields, bounded, and never by its raw
     const bounded = sse?.upstream as Record<string, string>;
     assert.ok(Number(bounded.bytesRead) <= 4_096, `read was not bounded: ${bounded.bytesRead}`);
     assert.ok(!JSON.stringify(sse).includes('leak=='), 'a non-JSON body must not be logged');
+
+    mode = 'silent';
+    const quiet = Date.now();
+    await GET(new Request(`${SITE}/a/msba/api/v1/init?clientId=example-com`));
+    const waited = Date.now() - quiet;
+    assert.ok(waited >= 900 && waited < 3_000, `a silent stream must end at the timeout, took ${waited}ms`);
   } finally {
     globalThis.fetch = original;
   }
