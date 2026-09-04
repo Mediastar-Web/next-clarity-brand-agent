@@ -184,6 +184,19 @@ export interface BrandAgentConfigInput {
   /** Version string reported by `api/config/status` (the plugin reports its own). */
   pluginVersion?: string;
 
+  /**
+   * WordPress core version this site claims to run on, in the `User-Agent` that
+   * goes out with `connect`, the uninstall notice and the content webhooks —
+   * `WordPress/<version>; <siteUrl>`, which is what WordPress itself puts there
+   * and therefore what the plugin is seen as.
+   *
+   * It is a stated fiction: unlike the rest of the disguise, which is true in
+   * that this really does speak the plugin's protocol, no WordPress is running
+   * here. Set it to match the version you want to be taken for, or leave the
+   * default.
+   */
+  wordpressVersion?: string;
+
   logger?: BrandAgentLogger;
 }
 

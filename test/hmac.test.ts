@@ -15,6 +15,7 @@ import {
   setHmacSecret,
   verifyIncomingSignature,
 } from '../src/crypto.js';
+import { signedBackendGet, signedBackendPost } from '../src/backend.js';
 import { getStatus } from '../src/connect.js';
 import { fileStorage, memoryStorage } from '../src/storage.js';
 
@@ -203,4 +204,34 @@ test('a secret written before a key existed is upgraded, and never reported as p
   // What the panel is told matches what is on disk, in both directions.
   assert.equal((await getStatus(upgraded)).encryptionKeyConfigured, true);
   assert.equal((await getStatus(legacy)).encryptionKeyConfigured, false);
+});
+
+test('signed calls go out as WordPress does, and the visitor still wins on the proxy', async () => {
+  const ctx = resolveConfig({
+    siteUrl: 'https://example.com',
+    storage: memoryStorage(),
+    encryptionKey: 'k',
+    rateLimit: false,
+    backendBaseUrl: 'https://backend.test',
+  });
+  await setHmacSecret(ctx, SECRET);
+
+  const seen: Record<string, string>[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    seen.push(Object.fromEntries(new Headers(init?.headers).entries()));
+    return new Response('{}', { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    await signedBackendPost(ctx, '/api/v1/wordpress/webhooks/content/updated', '{}');
+    await signedBackendGet(ctx, '/api/config/read', { 'User-Agent': 'Mozilla/5.0 (Visitor)' });
+  } finally {
+    globalThis.fetch = original;
+  }
+
+  // What WordPress itself puts on a plugin's outbound call.
+  assert.equal(seen[0]?.['user-agent'], 'WordPress/6.8.2; https://example.com');
+  // …unless the caller is forwarding a real visitor, as the widget proxy does.
+  assert.equal(seen[1]?.['user-agent'], 'Mozilla/5.0 (Visitor)');
 });

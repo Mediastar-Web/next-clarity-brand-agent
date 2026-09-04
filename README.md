@@ -294,6 +294,42 @@ its own setup flow). **The site must be publicly reachable at `siteUrl` while yo
 connect** — the dashboard calls back mid-handshake. `localhost` cannot work; use
 a tunnel with a stable hostname and set `siteUrl` to it.
 
+## What this claims to be
+
+The Brand Agent backend has no Next.js integration. It has a WordPress one, and
+this speaks it — which means that on the wire, deliberately, this presents
+itself as the official `microsoft-clarity` plugin. Not as a shortcut: the
+protocol is undocumented and closed-beta, and a request that does not look like
+the one client Microsoft supports is a request that can be turned away without
+explanation.
+
+Everything that goes out says so:
+
+| Where | Value | True? |
+| --- | --- | --- |
+| Iframe URL | `integration=Wordpress`, `hostingtype=selfhosted`, `WordPressBrandAgentSupported=1` | Yes — this really does implement that contract |
+| Signed headers | `X-WordPress-Client-Id`, `X-WordPress-Site-Url`, `X-WordPress-Timestamp`, `X-WordPress-Nonce`, `X-WordPress-Signature` | Yes — byte-identical canonical request |
+| Stored credential | `platform: wordpress` | Yes |
+| Clarity tag | `?ref=wordpress` | Yes — same loader, same attribution |
+| `api/config/status` | `pluginVersion: "0.10.29"` | Partly — the version of the plugin whose protocol this mirrors, not of this package |
+| Widget proxy | `User-Agent: BrandAgent-WordPress-Plugin/1.0`, overwritten by the visitor's own when present | Partly — the plugin's string, sent by something that is not the plugin |
+| `connect`, uninstall, content webhooks | `User-Agent: WordPress/6.8.2; https://yoursite` | **No** — nothing here runs WordPress |
+
+That last row is the one worth knowing about. The plugin sets no `User-Agent` on
+those calls, so what reaches Microsoft is WordPress core's own — and matching it
+means naming a version of software that is not installed. It is a stated
+fiction, `wordpressVersion` sets the number, and there is no configuration in
+which this is both accurate and identical. Pick which of the two you want.
+
+What is *not* disguised: `sitemapContentProvider` fetches your own pages as
+`BrandAgent-Next/1.0`. It never talks to Microsoft, WordPress has no equivalent
+to imitate (it reads its own database), and a truthful string keeps it
+filterable in your access logs.
+
+Run this on a domain you own, against a Clarity project you control. Microsoft
+can change the protocol without notice, in which case calls start failing with
+bare 401s.
+
 ## Security model
 
 Some of these routes have to be open to the internet. Here is exactly which,
@@ -365,7 +401,8 @@ Two deliberate deviations from the plugin, both hardening:
 | `backendBaseUrl` | *(resolved)* | Pin the backend instead of discovering it. |
 | `transformWidgetConfig` | — | Rewrite the widget configuration on its way to the browser. See below. |
 | `frontendInjectionUrl` | Microsoft CDN | Widget loader URL. |
-| `pluginVersion` | `1.0.0` | Reported by `api/config/status`. |
+| `pluginVersion` | `0.10.29` | Reported by `api/config/status` — the version of the plugin whose protocol this mirrors. |
+| `wordpressVersion` | `6.8.2` | WordPress core version declared in the outbound `User-Agent`. A stated fiction; see *What this claims to be*. |
 | `logger` | no-op | `(message, context) => void`. |
 
 ### Storage

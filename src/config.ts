@@ -52,6 +52,32 @@ export const MIRRORED_PLUGIN_VERSION = '0.10.29';
  */
 export const PLUGIN_USER_AGENT = 'BrandAgent-WordPress-Plugin/1.0';
 
+/**
+ * WordPress core version this claims to be running on.
+ *
+ * Part of the costume, and the most fabricated part of it: the rest of the
+ * disguise is true in the sense that we really do speak the plugin's protocol,
+ * whereas this says we run on software we do not run on. It is here because the
+ * plugin sends no `User-Agent` of its own on the signed calls, so what reaches
+ * Microsoft is WordPress's own `WordPress/<version>; <home_url>` — and a
+ * backend that ever filters on it would see a Node client instead.
+ *
+ * Set `wordpressVersion` to control the number; there is no way to be both
+ * accurate and identical here, so pick which one you want.
+ */
+export const MOCKED_WORDPRESS_VERSION = '6.8.2';
+
+/**
+ * `User-Agent` WordPress puts on the plugin's outbound calls, which is to say
+ * on `connect`, the uninstall notice and the content webhooks. Not used on the
+ * two widget proxy endpoints: there the plugin sets its own string and then
+ * overwrites it with the visitor's.
+ */
+export async function wordpressUserAgent(ctx: BrandAgentContext): Promise<string> {
+  const siteUrl = await ctx.siteUrl();
+  return siteUrl ? `WordPress/${ctx.wordpressVersion}; ${siteUrl}` : `WordPress/${ctx.wordpressVersion}`;
+}
+
 /** Default widget loader, same URL the plugin injects. */
 export const DEFAULT_FRONTEND_INJECTION_URL =
   'https://adsagentclientafd-b7hqhjdrf3fpeqh2.b01.azurefd.net/frontendInjection.js';
@@ -99,6 +125,8 @@ export interface BrandAgentContext {
   transformWidgetConfig: ((config: Record<string, unknown>) => Record<string, unknown> | void) | null;
   embedBaseUrl: string;
   pluginVersion: string;
+  /** WordPress core version declared to Microsoft. See `MOCKED_WORDPRESS_VERSION`. */
+  wordpressVersion: string;
   widgetRateLimiter: RateLimiter | null;
   /**
    * `enforced` — keyed and throttling. `disabled` — deliberately off.
@@ -257,6 +285,7 @@ export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
     // backend may gate capabilities on it, and claiming a number that plugin
     // never shipped invites being offered a contract we do not implement.
     pluginVersion: input.pluginVersion?.trim() || MIRRORED_PLUGIN_VERSION,
+    wordpressVersion: input.wordpressVersion?.trim() || MOCKED_WORDPRESS_VERSION,
     log,
   };
 }

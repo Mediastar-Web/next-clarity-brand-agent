@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { CONNECT_NONCE_TTL_MS, KEYS, type BrandAgentContext } from './config.js';
+import { CONNECT_NONCE_TTL_MS, KEYS, wordpressUserAgent, type BrandAgentContext } from './config.js';
 import {
   clearHmacSecret,
   getHmacSecret,
@@ -171,7 +171,7 @@ export async function connect(ctx: BrandAgentContext): Promise<BrandAgentConnect
   try {
     res = await fetch(`${ctx.clarityServerUrl}/wordpress/connect`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'User-Agent': await wordpressUserAgent(ctx) },
       body,
       signal: AbortSignal.timeout(30_000),
       cache: 'no-store',
@@ -248,6 +248,7 @@ export async function disconnect(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'User-Agent': await wordpressUserAgent(ctx),
           ...(await buildSignedHeaders(ctx, '/api/wordpress/uninstall', '', 'POST')),
         },
         signal: AbortSignal.timeout(15_000),

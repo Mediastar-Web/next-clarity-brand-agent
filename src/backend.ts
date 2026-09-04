@@ -1,4 +1,4 @@
-import { BACKEND_URL_TTL_MS, KEYS, type BrandAgentContext } from './config.js';
+import { BACKEND_URL_TTL_MS, KEYS, wordpressUserAgent, type BrandAgentContext } from './config.js';
 import { buildSignedHeaders } from './crypto.js';
 
 /**
@@ -18,7 +18,7 @@ export async function getBackendBaseUrl(ctx: BrandAgentContext): Promise<string>
 
   try {
     const res = await fetch(`${ctx.clarityServerUrl}/woocommerce/brandagent/config`, {
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', 'User-Agent': await wordpressUserAgent(ctx) },
       signal: AbortSignal.timeout(10_000),
       cache: 'no-store',
     });
@@ -64,7 +64,14 @@ export async function signedBackendGet(
 
   return fetch(`${backend}${pathAndQuery}`, {
     method: 'GET',
-    headers: { ...extraHeaders, ...(await buildSignedHeaders(ctx, pathAndQuery, '', 'GET')) },
+    // The WordPress identity is a default, not an override: the widget proxy
+    // passes the visitor's own `User-Agent` through `extraHeaders`, exactly as
+    // the plugin does, and that has to win.
+    headers: {
+      'User-Agent': await wordpressUserAgent(ctx),
+      ...extraHeaders,
+      ...(await buildSignedHeaders(ctx, pathAndQuery, '', 'GET')),
+    },
     cache: 'no-store',
     ...init,
   });
@@ -84,6 +91,7 @@ export async function signedBackendPost(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      'User-Agent': await wordpressUserAgent(ctx),
       ...(await buildSignedHeaders(ctx, pathAndQuery, body, 'POST')),
     },
     body,
