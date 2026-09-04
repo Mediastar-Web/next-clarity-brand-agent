@@ -111,8 +111,14 @@ at-rest key is minted next to it, and the first time you open the panel it asks
 you to confirm the domain — the same thing WordPress does during its install,
 where `home_url` and the salts are written for you and the plugin inherits them.
 
-For anything you actually deploy, pin the two facts the process cannot know —
-where a volume is mounted, and how many proxies are in front of it:
+One thing stays deliberately shut until you decide it: the two endpoints the
+public internet can drive (`config/read`, `v1/init`) answer **503** while
+nothing says how to identify a caller, because throttling them needs a key and
+serving them unthrottled spends your Brand Agent quota on anyone's `for` loop.
+The panel says so, and `rateLimit` below settles it in one line.
+
+So for anything you actually deploy, pin the two facts the process cannot know
+about itself — where a volume is mounted, and how many proxies are in front:
 
 ```ts
 // brand-agent.ts
@@ -353,7 +359,7 @@ Two deliberate deviations from the plugin, both hardening:
 | `encryptionKey` | *(minted by the storage)* | AES-256-CBC key for the secret at rest. `fileStorage` mints one into a sibling `.key` file (mode 0600), so a leaked state dump is not a credential; an adapter without that capability stores the secret in clear and says so through `logger`. `null` asks for clear storage deliberately. |
 | `content` | — | Content provider. Without one, content endpoints return empty. |
 | `allowedContentTypes` | `['post','page']` | Types the backend may request. |
-| `rateLimit` | `{ max: 120, windowMs: 60000 }`, **keying required** | Per-IP limit on the public widget endpoints. It has to know who is calling, so one of these is required: `trustProxy`, the number of proxies of yours that append to `X-Forwarded-For` (`1` behind a single one) — the address is read that many entries from the right, so a caller cannot pick their own key, and a chain shorter than that yields no key rather than a caller-chosen one; `clientIp: (request) => ...`, to take the address from your host; or `rateLimit: false`, to serve the endpoints unthrottled. Neither throws at startup. `createAdminAuth` takes the same `trustProxy`/`clientIp` for the login throttle. |
+| `rateLimit` | `{ max: 120, windowMs: 60000 }`, **keying required** | Per-IP limit on the public widget endpoints. It has to know who is calling, so one of these is required: `trustProxy`, the number of proxies of yours that append to `X-Forwarded-For` (`1` behind a single one) — the address is read that many entries from the right, so a caller cannot pick their own key, and a chain shorter than that yields no key rather than a caller-chosen one; `clientIp: (request) => ...`, to take the address from your host; or `rateLimit: false`, to serve the endpoints unthrottled on purpose. Until one of them is given, setup and connect work normally and those two endpoints answer 503. `createAdminAuth` takes the same `trustProxy`/`clientIp` for the login throttle. |
 | `clarityServerUrl` | `https://clarity.microsoft.com` | Override for testing. |
 | `embedBaseUrl` | `https://clarity.microsoft.com/embed` | Panel iframe; its origin is the postMessage allow-list. |
 | `backendBaseUrl` | *(resolved)* | Pin the backend instead of discovering it. |

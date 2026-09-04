@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { CONNECT_NONCE_TTL_MS, KEYS, type BrandAgentContext } from './config.js';
-import { clearHmacSecret, getHmacSecret, normalizeSiteUrl, randomToken, safeEqual, setHmacSecret, sha256Hex } from './crypto.js';
+import {
+  clearHmacSecret,
+  getHmacSecret,
+  normalizeSiteUrl,
+  randomToken,
+  safeEqual,
+  secretAtRest,
+  setHmacSecret,
+  sha256Hex,
+} from './crypto.js';
 import { buildSignedHeaders } from './crypto.js';
 import type { BrandAgentConnectResult, BrandAgentStatus } from './types.js';
 
@@ -59,6 +68,10 @@ export async function getStatus(ctx: BrandAgentContext): Promise<BrandAgentStatu
     ctx.encryptionKey(),
   ]);
 
+  // After `getHmacSecret`, which upgrades a legacy plaintext value in place:
+  // reading before that would report the state we just stopped being in.
+  const atRest = await secretAtRest(ctx);
+
   return {
     connected: oauth === '1' && Boolean(secret),
     unverified: unverified === '1',
@@ -76,7 +89,11 @@ export async function getStatus(ctx: BrandAgentContext): Promise<BrandAgentStatu
     // Locked once a credential exists: the client id is derived from it.
     siteUrlLocked: siteUrlSource === 'config' || Boolean(secret),
     clientId: siteUrl ? normalizeSiteUrl(siteUrl) : '',
-    encryptionKeyConfigured: Boolean(encryptionKey),
+    // A key that exists but does not cover the value on disk protects nothing,
+    // and saying otherwise would silence the one warning that matters.
+    encryptionKeyConfigured: Boolean(encryptionKey) && atRest !== 'clear',
+    secretAtRest: atRest,
+    rateLimit: ctx.rateLimitPolicy,
     storage: ctx.storage.describe?.() ?? null,
   };
 }

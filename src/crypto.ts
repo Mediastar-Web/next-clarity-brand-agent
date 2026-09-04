@@ -52,7 +52,27 @@ async function decrypt(ctx: BrandAgentContext, payload: string): Promise<string 
 /** The stored HMAC secret in clear, or `null` when absent or unreadable. */
 export async function getHmacSecret(ctx: BrandAgentContext): Promise<string | null> {
   const stored = await ctx.storage.get(KEYS.hmacSecret);
-  return stored ? await decrypt(ctx, stored) : null;
+  if (!stored) return null;
+
+  const secret = await decrypt(ctx, stored);
+
+  // Upgrade in place: a state written before a key existed holds `plain:…`, and
+  // a key minted afterwards protects nothing until the value is rewritten
+  // through it. Once done the payload no longer starts with `plain:`, so this
+  // costs one write in the lifetime of the installation.
+  if (secret && stored.startsWith('plain:') && (await ctx.encryptionKey())) {
+    await ctx.storage.set(KEYS.hmacSecret, await encrypt(ctx, secret));
+    ctx.log('brand-agent: HMAC secret re-encrypted at rest');
+  }
+
+  return secret;
+}
+
+/** How the secret is actually sitting in storage right now. */
+export async function secretAtRest(ctx: BrandAgentContext): Promise<'encrypted' | 'clear' | 'absent'> {
+  const stored = await ctx.storage.get(KEYS.hmacSecret);
+  if (!stored) return 'absent';
+  return stored.startsWith('plain:') ? 'clear' : 'encrypted';
 }
 
 /**

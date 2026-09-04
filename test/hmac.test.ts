@@ -11,9 +11,11 @@ import {
   buildSignedHeaders,
   getHmacSecret,
   normalizeSiteUrl,
+  secretAtRest,
   setHmacSecret,
   verifyIncomingSignature,
 } from '../src/crypto.js';
+import { getStatus } from '../src/connect.js';
 import { fileStorage, memoryStorage } from '../src/storage.js';
 
 const SECRET = 'test-secret';
@@ -178,4 +180,27 @@ test('a storage that cannot keep a key stores the secret in clear, and says so',
 
   assert.equal(await ctx.storage.get('brandagent_hmac_secret'), `plain:${SECRET}`);
   assert.equal(logs.filter((line) => line.includes('stored in clear')).length, 1);
+});
+
+test('a secret written before a key existed is upgraded, and never reported as protected until it is', async () => {
+  const storage = memoryStorage();
+
+  // v0.1 state: no key anywhere, so the secret went in clear.
+  const legacy = resolveConfig({ siteUrl: 'https://example.com', storage, rateLimit: false, logger: () => {} });
+  await setHmacSecret(legacy, SECRET);
+  assert.equal(await storage.get('brandagent_hmac_secret'), `plain:${SECRET}`);
+
+  // Upgrade: a key exists now, but the value on disk is still plaintext.
+  const upgraded = resolveConfig({ siteUrl: 'https://example.com', storage, encryptionKey: 'a-key', rateLimit: false });
+  assert.equal(await secretAtRest(upgraded), 'clear');
+
+  // Reading it rewrites it through the key, once.
+  assert.equal(await getHmacSecret(upgraded), SECRET);
+  const stored = await storage.get('brandagent_hmac_secret');
+  assert.ok(stored && !stored.startsWith('plain:') && !stored.includes(SECRET));
+  assert.equal(await secretAtRest(upgraded), 'encrypted');
+
+  // What the panel is told matches what is on disk, in both directions.
+  assert.equal((await getStatus(upgraded)).encryptionKeyConfigured, true);
+  assert.equal((await getStatus(legacy)).encryptionKeyConfigured, false);
 });

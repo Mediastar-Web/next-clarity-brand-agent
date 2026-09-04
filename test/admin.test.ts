@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createAdminAuth } from '../src/auth.js';
+import { createBrandAgent } from '../src/index.js';
 import { KEYS, resolveConfig, type BrandAgentContext } from '../src/config.js';
 import { setHmacSecret } from '../src/crypto.js';
 import { buildEmbedUrl, embedOrigin, isValidProjectId } from '../src/embed.js';
@@ -422,4 +423,55 @@ test('the panel proposes the origin it was opened on, and connect waits for it',
   assert.equal(after.siteUrl, 'https://www.example.com');
   assert.equal(after.siteUrlSuggestion, '');
   assert.equal(after.clientId, 'www-example-com');
+});
+
+// ── Zero-config, and what it does not quietly leave open ───────────────────
+
+test('a zero-config agent runs, and closes only what the public can drive', async () => {
+  // No `rateLimit` at all: the question of who is calling is still open.
+  const ctx = resolveConfig({ storage: memoryStorage(), encryptionKey: 'k' });
+  assert.equal(ctx.rateLimitPolicy, 'unkeyed');
+
+  await setHmacSecret(ctx, 'test-secret');
+  await ctx.claimSiteUrl(SITE);
+
+  const { GET } = createProxyHandlers(ctx);
+
+  // The two endpoints anyone can call refuse to serve rather than serve
+  // unprotected — and say which line is missing.
+  const read = await GET(new Request(`${SITE}/a/msba/api/config/read?clientId=example-com`));
+  assert.equal(read.status, 503);
+  const body = (await read.json()) as { data?: { message?: string } };
+  assert.match(String(body.data?.message), /rateLimit/);
+
+  // Everything needed to set the site up still works.
+  const admin = createAdminHandlers(ctx, { authorize: () => true });
+  assert.equal((await admin.GET(new Request(`${SITE}/api/admin/brand-agent`))).status, 200);
+
+  // And the widget's own status endpoint stays open, carrying the reason.
+  const status = await GET(new Request(`${SITE}/a/msba/api/config/status`));
+  assert.equal(((await status.json()) as { data: { rateLimit: string } }).data.rateLimit, 'unkeyed');
+});
+
+test('createBrandAgent needs no arguments beyond a storage', () => {
+  const agent = createBrandAgent({ storage: memoryStorage() });
+  assert.equal(agent.config.rateLimitPolicy, 'unkeyed');
+  assert.equal(agent.config.configuredSiteUrl, null);
+});
+
+test('a site connected under a configured URL cannot have its domain claimed', async () => {
+  const storage = memoryStorage();
+
+  // A state from the previous release: the URL lived in the configuration, so
+  // nothing was ever stored for it.
+  const legacy = resolveConfig({ siteUrl: 'https://old.example', storage, encryptionKey: 'k', rateLimit: false });
+  await setHmacSecret(legacy, 'test-secret');
+
+  // The upgrade drops `siteUrl` to use the panel instead.
+  const upgraded = resolveConfig({ storage, encryptionKey: 'k', rateLimit: false });
+  assert.equal(await upgraded.siteUrl(), null);
+
+  const refused = await upgraded.claimSiteUrl('https://new.example');
+  assert.equal(refused.ok, false);
+  assert.match(refused.error ?? '', /Disconnect first/);
 });

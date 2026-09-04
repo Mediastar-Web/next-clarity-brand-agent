@@ -192,7 +192,15 @@ export interface BrandAgentStatus {
   siteUrlLocked: boolean;
   /** Normalized site URL: the HMAC client id. */
   clientId: string;
+  /** True only when the secret is really protected on disk right now. */
   encryptionKeyConfigured: boolean;
+  /** How the stored secret is sitting: encrypted, in clear, or not there yet. */
+  secretAtRest: 'encrypted' | 'clear' | 'absent';
+  /**
+   * Whether the public widget endpoints are throttled, deliberately open, or
+   * closed because nothing says how to key a caller.
+   */
+  rateLimit: 'enforced' | 'disabled' | 'unkeyed';
   /** Where the state is kept, when the adapter can say. */
   storage: BrandAgentStorageInfo | null;
   /** Ready-to-frame URL of the embedded Clarity dashboard, when a nonce is issued. */

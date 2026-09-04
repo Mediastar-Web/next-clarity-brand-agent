@@ -37,6 +37,8 @@ export const KEYS = {
  */
 export const PROXY_BASE_PATH = '/a/msba';
 
+export type RateLimitPolicy = 'enforced' | 'disabled' | 'unkeyed';
+
 /** Default widget loader, same URL the plugin injects. */
 export const DEFAULT_FRONTEND_INJECTION_URL =
   'https://adsagentclientafd-b7hqhjdrf3fpeqh2.b01.azurefd.net/frontendInjection.js';
@@ -84,6 +86,12 @@ export interface BrandAgentContext {
   embedBaseUrl: string;
   pluginVersion: string;
   widgetRateLimiter: RateLimiter | null;
+  /**
+   * `enforced` — keyed and throttling. `disabled` — deliberately off.
+   * `unkeyed` — nobody has said where the caller's address comes from, so the
+   * public widget endpoints refuse to serve rather than serve unprotected.
+   */
+  rateLimitPolicy: RateLimitPolicy;
   /** Rate-limit key for a request: the client IP, as far as it can be trusted. */
   clientIp: (request: Request) => string;
   log: BrandAgentLogger;
@@ -157,14 +165,21 @@ export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
 
   if (rateLimit) assertClientIpOptions(ipOptions, 'next-clarity-brand-agent: `rateLimit.trustProxy`');
 
-  // A limiter with no key is indistinguishable from a working one until
-  // someone spends the quota, and a warning through a logger that defaults to
-  // a no-op is no better than silence. So the choice has to be made here:
-  // either say where the caller's address comes from, or say out loud that the
-  // public endpoints are served unthrottled.
-  if (rateLimit && !hasClientIpSource(ipOptions)) {
-    throw new Error(
-      'next-clarity-brand-agent: rate limiting needs a client address to key on. Set `rateLimit.trustProxy` (1 behind a single reverse proxy) or `rateLimit.clientIp`, or pass `rateLimit: false` to serve the widget endpoints unthrottled.',
+  // Three states, not two. A limiter with no key is indistinguishable from a
+  // working one until someone spends the quota, so "not decided" must not read
+  // as "off" — but it must not stop the agent from being set up either: the
+  // panel, the connect handshake and the admin API are all reachable while the
+  // question is still open. Only the two endpoints the public internet can
+  // drive stay shut, and `api/config/status` reports why.
+  const rateLimitPolicy: RateLimitPolicy = !rateLimit
+    ? 'disabled'
+    : hasClientIpSource(ipOptions)
+      ? 'enforced'
+      : 'unkeyed';
+
+  if (rateLimitPolicy === 'unkeyed') {
+    log(
+      'brand-agent: the widget endpoints are closed until rate limiting can key requests — set `rateLimit.trustProxy` (1 behind a single reverse proxy) or `rateLimit.clientIp`, or pass `rateLimit: false` to serve them unthrottled',
     );
   }
 
@@ -183,15 +198,23 @@ export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
         return { ok: false, error: 'Not a usable site URL: expected something like https://example.com.' };
       }
 
-      const current = await storage.get(KEYS.siteUrl);
+      const [current, secret] = await Promise.all([
+        storage.get(KEYS.siteUrl),
+        storage.get(KEYS.hmacSecret),
+      ]);
       if (current === normalized) return { ok: true, siteUrl: normalized };
 
-      // Once a credential exists it is bound to the old value, so swapping the
-      // identity underneath it would leave a connection that can only 401.
-      if (current && (await storage.get(KEYS.hmacSecret))) {
+      // The credential is what locks this, not the stored URL — a state written
+      // by an earlier release has a live secret and no stored URL at all,
+      // because the value lived in the configuration. Keying off `current`
+      // there would let the identity be swapped under a credential bound to the
+      // old one, and every signature after that is a 401.
+      if (secret) {
         return {
           ok: false,
-          error: 'The site is connected on ' + current + '. Disconnect first to change the domain.',
+          error: current
+            ? `The site is connected on ${current}. Disconnect first to change the domain.`
+            : 'The site is already connected under the URL it was configured with. Disconnect first, then confirm the new one.',
         };
       }
 
@@ -209,9 +232,11 @@ export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
     backendBaseUrl: input.backendBaseUrl ? trimTrailingSlashes(input.backendBaseUrl.trim()) : null,
     frontendInjectionUrl: input.frontendInjectionUrl?.trim() || DEFAULT_FRONTEND_INJECTION_URL,
     embedBaseUrl: trimTrailingSlashes(input.embedBaseUrl?.trim() || DEFAULT_EMBED_BASE_URL),
-    widgetRateLimiter: rateLimit
-      ? createRateLimiter({ max: rateLimit.max ?? 120, windowMs: rateLimit.windowMs ?? 60_000 })
-      : null,
+    rateLimitPolicy,
+    widgetRateLimiter:
+      rateLimitPolicy === 'enforced'
+        ? createRateLimiter({ max: rateLimit?.max ?? 120, windowMs: rateLimit?.windowMs ?? 60_000 })
+        : null,
     clientIp: (request: Request) => resolveClientIp(request, ipOptions),
     pluginVersion: input.pluginVersion?.trim() || '1.0.0',
     log,

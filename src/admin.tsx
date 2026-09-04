@@ -401,7 +401,8 @@ export function BrandAgentAdmin({
             tone={status.injectFrontendScript ? 'ok' : 'off'}
           />
           {!status.agentEnabled && <Chip label="Agent off" tone="warn" />}
-          {!status.encryptionKeyConfigured && <Chip label="Secret stored in clear" tone="warn" />}
+          {status.secretAtRest === 'clear' && <Chip label="Secret stored in clear" tone="warn" />}
+          {status.rateLimit === 'unkeyed' && <Chip label="Widget endpoints closed" tone="warn" />}
         </div>
         <div style={styles.row}>
           <button style={styles.button} onClick={() => void refresh()} disabled={busy}>
@@ -421,13 +422,16 @@ export function BrandAgentAdmin({
         </div>
       </div>
 
-      {!status.siteUrl && (
+      {!status.siteUrlLocked && (
         <div style={styles.notice}>
-          <div style={styles.noticeTitle}>Confirm the domain this site answers on</div>
+          <div style={styles.noticeTitle}>
+            {status.siteUrl ? 'Change the domain this site answers on' : 'Confirm the domain this site answers on'}
+          </div>
           <div style={styles.noticeBody}>
             It is the identity registered with Microsoft and the origin the Clarity dashboard calls back to prove
             you own the site, so it has to be the public URL, reachable from the internet — not a preview or a
-            tunnel. It is frozen once you connect: the credential is bound to it.
+            tunnel. Correct it here for as long as it stays editable: connecting freezes it, because the
+            credential is bound to it.
           </div>
           <div style={styles.row}>
             <input
@@ -442,8 +446,22 @@ export function BrandAgentAdmin({
               onClick={() => void act('set-site-url', { siteUrl: siteUrlDraft })}
               disabled={busy || !siteUrlDraft}
             >
-              Confirm
+              {status.siteUrl ? 'Update' : 'Confirm'}
             </button>
+          </div>
+        </div>
+      )}
+
+      {status.rateLimit === 'unkeyed' && (
+        <div style={styles.notice}>
+          <div style={styles.noticeTitle}>The widget endpoints are closed</div>
+          <div style={styles.noticeBody}>
+            <code>config/read</code> and <code>v1/init</code> are the two routes the public internet can drive,
+            and they spend your Brand Agent quota. Throttling them needs to know who is calling, which only you
+            can say: pass <code>rateLimit: {'{'} trustProxy: 1 {'}'}</code> if one reverse proxy sits in front of
+            this app, <code>rateLimit: {'{'} clientIp {'}'}</code> to read the address from your host, or{' '}
+            <code>rateLimit: false</code> to serve them unthrottled on purpose. Setup and connect work either
+            way; the widget will not, until this is decided.
           </div>
         </div>
       )}

@@ -50,6 +50,21 @@ function rateLimited(ctx: BrandAgentContext, request: Request): boolean {
 }
 
 /**
+ * The two endpoints anyone on the internet can drive, refusing to serve while
+ * the limiter has no key. Shut is a worse day than throttled and a better one
+ * than a stranger spending the site's quota — and unlike either of those, it
+ * says which line of configuration is missing.
+ */
+function rateLimitUnkeyed(ctx: BrandAgentContext): Response | null {
+  if (ctx.rateLimitPolicy !== 'unkeyed') return null;
+
+  return wpJsonError(
+    'Rate limiting is not configured: set `rateLimit.trustProxy` or `rateLimit.clientIp`, or `rateLimit: false` to serve this unthrottled.',
+    503,
+  );
+}
+
+/**
  * The origin this request reached us on, for the panel to propose as the site
  * URL. Header-derived, therefore a *suggestion*: it is shown to a signed-in
  * administrator who confirms it with a click, never adopted on its own.
@@ -80,6 +95,8 @@ function proxySubPath(request: Request): string {
  * directly: only the site holds the secret.
  */
 async function handleConfigRead(ctx: BrandAgentContext, request: Request): Promise<Response> {
+  const closed = rateLimitUnkeyed(ctx);
+  if (closed) return closed;
   if (rateLimited(ctx, request)) return wpJsonError('Too many requests', 429);
 
   if (!(await getHmacSecret(ctx))) {
@@ -127,6 +144,8 @@ async function handleConfigRead(ctx: BrandAgentContext, request: Request): Promi
  * soon as the backend emits them.
  */
 async function handleInit(ctx: BrandAgentContext, request: Request): Promise<Response> {
+  const closed = rateLimitUnkeyed(ctx);
+  if (closed) return closed;
   if (rateLimited(ctx, request)) return wpJsonError('Too many requests', 429);
 
   if (!(await getHmacSecret(ctx))) {
@@ -255,6 +274,7 @@ async function handleConfigStatus(ctx: BrandAgentContext): Promise<Response> {
     wpJsonSuccess({
       BAInjectFrontendScript: inject ?? 'false',
       BAOauthSuccess: live,
+      rateLimit: ctx.rateLimitPolicy,
       pluginVersion: ctx.pluginVersion,
       frontendInjectionUrl: ctx.frontendInjectionUrl,
     }),
