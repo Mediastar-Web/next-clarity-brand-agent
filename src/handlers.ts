@@ -104,7 +104,23 @@ function proxyHeaders(request: Request, base: Record<string, string>): Record<st
   return headers;
 }
 
-/** Path under the proxy base, e.g. `api/config/read`. */
+/**
+ * The first few hundred bytes of an upstream error, for the log.
+ *
+ * A bare status number cannot tell "your signature is wrong" from "this agent
+ * is not published yet", and the backend writes which one it is in the body —
+ * which used to be discarded. Nothing of ours is in there; it is Microsoft's
+ * explanation, trimmed so a log line stays a line.
+ */
+async function upstreamExcerpt(upstream: Response): Promise<string> {
+  try {
+    return (await upstream.text()).replace(/\s+/g, ' ').trim().slice(0, 300);
+  } catch {
+    return '';
+  }
+}
+
+/** Path under the proxy base, e.g. `api/content/fetch`. */
 function proxySubPath(request: Request): string {
   const { pathname } = new URL(request.url);
   const base = `${PROXY_BASE_PATH}/`;
@@ -146,7 +162,10 @@ async function handleConfigRead(ctx: BrandAgentContext, request: Request): Promi
   }
 
   if (!upstream.ok) {
-    ctx.log('brand-agent: config/read non-success', { status: upstream.status });
+    ctx.log('brand-agent: config/read non-success', {
+      status: upstream.status,
+      upstream: await upstreamExcerpt(upstream),
+    });
     return wpJsonError('Failed to retrieve configuration', upstream.status);
   }
 
@@ -232,7 +251,10 @@ async function handleInit(ctx: BrandAgentContext, request: Request): Promise<Res
   }
 
   if (!upstream.ok || !upstream.body) {
-    ctx.log('brand-agent: v1/init non-success', { status: upstream.status });
+    ctx.log('brand-agent: v1/init non-success', {
+      status: upstream.status,
+      upstream: await upstreamExcerpt(upstream),
+    });
     return wpJsonError('Failed to initialize chat', upstream.status || 502);
   }
 
@@ -393,6 +415,11 @@ async function handleContentFetch(ctx: BrandAgentContext, request: Request): Pro
   }
 
   const result = await ctx.content.list({ page, perPage, types });
+
+  // The one inbound call worth a line on success: it is the indexing step the
+  // dashboard's "preparing" screen is waiting on, and silence here was
+  // indistinguishable from the backend never having asked.
+  ctx.log('brand-agent: content/fetch served', { page, perPage, count: result.items.length, total: result.total });
 
   return noStore(
     wpJsonSuccess({
