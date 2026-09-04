@@ -31,8 +31,23 @@ export interface BrandAgentAdminProps {
   sessionPath?: string;
   /** Render the embedded Clarity dashboard. */
   showEmbed?: boolean;
-  /** Height of the embed, in CSS units. */
+  /** Height of the embed, in CSS units. Defaults to `100vh` in `embed` layout. */
   embedHeight?: string;
+  /**
+   * `embed` (default) — the dashboard and nothing else, the way the WordPress
+   * plugin's wp-admin screen looks: onboarding, project linking, agent build
+   * and publish all happen inside it. Status and manual controls stay one click
+   * away, under *Details*.
+   *
+   * `full` — everything visible at once. Useful while setting the integration
+   * up, or when the dashboard itself is unreachable and you have to drive the
+   * connection by hand.
+   *
+   * Blocking warnings (a domain still to confirm, the widget endpoints closed,
+   * state on an ephemeral disk) are shown in both: they are the ones WordPress
+   * never has to raise, and hiding them would only move the confusion.
+   */
+  layout?: 'embed' | 'full';
 }
 
 type LogEntry = { at: string; message: string; tone: 'info' | 'ok' | 'error' };
@@ -116,8 +131,10 @@ export function BrandAgentAdmin({
   apiPath = '/api/admin/brand-agent',
   sessionPath,
   showEmbed = true,
-  embedHeight = '760px',
+  embedHeight,
+  layout = 'embed',
 }: BrandAgentAdminProps) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'unauthorized' | 'error'>('loading');
   const [busy, setBusy] = useState(false);
@@ -390,8 +407,41 @@ export function BrandAgentAdmin({
       : { label: 'Connected', tone: 'ok' as const }
     : { label: 'Not connected', tone: 'off' as const };
 
+  // The wp-admin look: the dashboard, and out of its way. Everything below is
+  // still one click down, because unlike WordPress this integration has parts
+  // that can be misconfigured and have to be reachable.
+  const compact = layout === 'embed' && !detailsOpen;
+
   return (
-    <div style={styles.root}>
+    <div style={compact ? { ...styles.root, gap: 12 } : styles.root}>
+      {compact && (
+        <div style={{ ...styles.row, justifyContent: 'space-between' }}>
+          <div style={{ ...styles.row, gap: 10, fontSize: 12.5, opacity: 0.75 }}>
+            <strong style={{ fontSize: 13, opacity: 1 }}>Clarity Brand Agent</strong>
+            <Chip {...connectionChip} />
+            {status.projectId && <span>project {status.projectId}</span>}
+          </div>
+          <div style={styles.row}>
+            <button style={styles.button} onClick={() => setDetailsOpen(true)}>
+              Details
+            </button>
+            {sessionPath && (
+              <button
+                style={styles.button}
+                onClick={async () => {
+                  await fetch(sessionPath, { method: 'DELETE' });
+                  setState('unauthorized');
+                }}
+              >
+                Sign out
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!compact && (
+      <>
       <div style={{ ...styles.row, justifyContent: 'space-between' }}>
         <div style={styles.row}>
           <strong style={{ fontSize: 15 }}>Clarity Brand Agent</strong>
@@ -421,6 +471,16 @@ export function BrandAgentAdmin({
           )}
         </div>
       </div>
+
+      {layout === 'embed' && detailsOpen && (
+        <div style={styles.row}>
+          <button style={styles.button} onClick={() => setDetailsOpen(false)}>
+            Hide details
+          </button>
+        </div>
+      )}
+      </>
+      )}
 
       {!status.siteUrlLocked && (
         <div style={styles.notice}>
@@ -478,6 +538,8 @@ export function BrandAgentAdmin({
         </div>
       )}
 
+      {!compact && (
+      <>
       <div style={styles.grid}>
         <Field label="Site URL" value={status.siteUrl} />
         <Field label="Client ID" value={status.clientId} />
@@ -588,11 +650,14 @@ export function BrandAgentAdmin({
         </div>
       )}
 
+      </>
+      )}
+
       {showEmbed && status.embedUrl && (
         <iframe
           title="Microsoft Clarity"
           src={status.embedUrl}
-          style={{ ...styles.iframe, height: embedHeight }}
+          style={{ ...styles.iframe, height: embedHeight ?? (layout === 'embed' ? '100vh' : '760px') }}
           sandbox="allow-modals allow-forms allow-scripts allow-same-origin allow-popups allow-storage-access-by-user-activation"
         />
       )}
