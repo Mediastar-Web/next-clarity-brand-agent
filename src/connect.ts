@@ -195,9 +195,17 @@ async function acquireConnectLock(ctx: BrandAgentContext): Promise<string | null
   if (storage.setIfAbsent) {
     if (await storage.setIfAbsent(KEYS.connectLock, owner)) return owner;
 
-    // Held. Only a lock whose expiry has passed may be taken over, and taking
-    // it over means removing exactly what we looked at and claiming again —
-    // the second claim is atomic, so only one contender can win it.
+    // Held. Only a lock whose expiry has passed may be taken over: remove what
+    // we looked at, then claim again — and the claim is atomic, so of two
+    // contenders reaching this point only one comes away owning it.
+    //
+    // Not airtight, and worth naming: the delete is not conditional on the
+    // value still being the one we read, because `BrandAgentStorage` has no
+    // compare-and-delete. Two processes that both find the same abandoned lock
+    // can therefore both delete — one of them removing a claim the other has
+    // just made — and both proceed. It takes two processes, an abandoned lock,
+    // and the same millisecond; the plugin closes it with `DELETE … WHERE
+    // option_value = %s`, which SQL gives it and a key/value store does not.
     const held = await storage.get(KEYS.connectLock);
     if (!expired(held)) return null;
 
@@ -225,7 +233,9 @@ async function runConnect(ctx: BrandAgentContext): Promise<BrandAgentConnectResu
   try {
     return await performConnect(ctx);
   } finally {
-    // Only ours: a lock that expired and was taken over belongs to someone else.
+    // Only ours: a lock that expired and was taken over belongs to someone
+    // else. Read-then-delete, with the same gap as above — a successor that
+    // claims between these two lines loses its lock, and connects again.
     if ((await ctx.storage.get(KEYS.connectLock)) === owner) {
       await ctx.storage.delete(KEYS.connectLock);
     }

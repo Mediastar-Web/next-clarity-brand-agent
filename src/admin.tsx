@@ -170,6 +170,12 @@ export function BrandAgentAdmin({
    * never moves it.
    */
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
+  /**
+   * Refreshes can finish out of order — a slow one started before a fast one
+   * lands after it — and applying the older answer would move the iframe to a
+   * URL that was already superseded. Only the newest read may act.
+   */
+  const refreshSeqRef = useRef(0);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [authInfo, setAuthInfo] = useState<AuthInfo | null>(null);
   const [setupToken, setSetupToken] = useState('');
@@ -184,7 +190,8 @@ export function BrandAgentAdmin({
     setLog((entries) => [{ at: new Date().toLocaleTimeString(), message, tone }, ...entries].slice(0, 30));
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<{ status: AdminStatus | null; current: boolean }> => {
+    const seq = (refreshSeqRef.current += 1);
     // Unauthenticated and cheap: tells us whether to show a login form or a
     // first-run setup form, and whether the password can be changed at all.
     if (sessionPath) {
@@ -200,11 +207,11 @@ export function BrandAgentAdmin({
       const res = await fetch(apiPath, { cache: 'no-store' });
       if (res.status === 401 || res.status === 403) {
         setState('unauthorized');
-        return null;
+        return { status: null, current: seq === refreshSeqRef.current };
       }
       if (!res.ok) {
         setState('error');
-        return null;
+        return { status: null, current: seq === refreshSeqRef.current };
       }
       const next = (await res.json()) as AdminStatus;
       setStatus(next);
@@ -220,10 +227,10 @@ export function BrandAgentAdmin({
       if (next.embedUrl) setEmbedUrl((current) => current ?? next.embedUrl ?? null);
 
       setState('ready');
-      return next;
+      return { status: next, current: seq === refreshSeqRef.current };
     } catch {
       setState('error');
-      return null;
+      return { status: null, current: seq === refreshSeqRef.current };
     }
   }, [apiPath, sessionPath]);
 
@@ -276,9 +283,10 @@ export function BrandAgentAdmin({
         setBusy(false);
         // A nonce argument means the dashboard asked, and it is mid-flow;
         // anything else is a button here, and may move the iframe.
-        void refresh().then((next) => {
+        void refresh().then(({ status: next, current }) => {
           // A nonce argument means the dashboard asked, and it is mid-flow.
-          if (nonce === undefined && RELOADS_DASHBOARD.has(action)) reloadEmbed(next);
+          // `current` drops an answer another refresh has already superseded.
+          if (current && nonce === undefined && RELOADS_DASHBOARD.has(action)) reloadEmbed(next);
         });
       }
     },

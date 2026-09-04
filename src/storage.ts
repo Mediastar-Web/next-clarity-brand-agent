@@ -118,6 +118,9 @@ export function fileStorage(options: { path?: string } = {}): BrandAgentStorage 
    */
   async function setIfAbsent(key: string, value: string): Promise<boolean> {
     return enqueue(async () => {
+      // A key already written the ordinary way is still a key that is there.
+      if ((await load())[key] !== undefined) return false;
+
       await mkdir(dirname(path), { recursive: true });
       try {
         await writeFile(claimPath(key), value, { encoding: 'utf8', mode: 0o600, flag: 'wx' });

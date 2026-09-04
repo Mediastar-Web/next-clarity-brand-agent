@@ -48,6 +48,17 @@ export function sqliteStorage(options: {
         | undefined;
       return row?.value ?? null;
     },
+    /**
+     * SQLite decides this one for us: the primary key makes the insert either
+     * happen or not, and `changes` says which. No read-then-write to lose.
+     */
+    async setIfAbsent(key, value) {
+      const result = handle()
+        .prepare(`INSERT INTO ${table} (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING`)
+        .run(key, value) as { changes?: number };
+      return result?.changes === 1;
+    },
+
     async set(key, value) {
       handle()
         .prepare(
