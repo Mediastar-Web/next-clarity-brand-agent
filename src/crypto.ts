@@ -193,16 +193,60 @@ export async function verifyIncomingSignature(
   rawBody = '',
 ): Promise<boolean> {
   const [secret, siteUrl] = await Promise.all([getHmacSecret(ctx), ctx.siteUrl()]);
-  if (!secret || !siteUrl || !signature || !timestamp) return false;
+
+  // Each refusal says which of the three parts did not line up. The message is
+  // `siteUrl + timestamp + sha256(body)`, so when a caller that should be
+  // authentic is turned away, the question is always: which one? Nothing here
+  // reveals key material — not the secret, not the expected signature — only
+  // the shape of what was compared.
+  if (!secret) {
+    ctx.log('brand-agent: inbound signature refused: no HMAC secret stored');
+    return false;
+  }
+  if (!siteUrl) {
+    ctx.log('brand-agent: inbound signature refused: no site URL confirmed');
+    return false;
+  }
+  if (!signature || !timestamp) {
+    ctx.log('brand-agent: inbound signature refused: missing signature or timestamp header');
+    return false;
+  }
 
   const ts = Number.parseInt(timestamp, 10);
-  if (!Number.isFinite(ts)) return false;
-  if (Math.abs(Math.floor(Date.now() / 1000) - ts) > HMAC_TIMESTAMP_WINDOW_S) return false;
+  if (!Number.isFinite(ts)) {
+    ctx.log('brand-agent: inbound signature refused: unparseable timestamp', { timestamp });
+    return false;
+  }
+
+  const skewSeconds = Math.floor(Date.now() / 1000) - ts;
+  if (Math.abs(skewSeconds) > HMAC_TIMESTAMP_WINDOW_S) {
+    // Almost always this machine's clock, not theirs.
+    ctx.log('brand-agent: inbound signature refused: timestamp outside the replay window', {
+      skewSeconds,
+      windowSeconds: HMAC_TIMESTAMP_WINDOW_S,
+    });
+    return false;
+  }
 
   const message = buildInboundMessage(siteUrl, timestamp, rawBody);
   const expected = createHmac('sha256', secret).update(message).digest('base64');
 
-  return safeEqual(expected, signature);
+  if (!safeEqual(expected, signature)) {
+    ctx.log('brand-agent: inbound signature refused: does not match', {
+      // The three inputs to the message, so a mismatch can be traced to one of
+      // them: the identity we sign as, the body we hashed, and how far off the
+      // clocks are. A body of 0 bytes where one was sent, or a site URL that is
+      // not the one Microsoft registered, both show up here.
+      siteUrl,
+      bodyBytes: Buffer.byteLength(rawBody),
+      bodySha256: createHash('sha256').update(rawBody).digest('hex').slice(0, 12),
+      skewSeconds,
+      signatureLength: signature.length,
+    });
+    return false;
+  }
+
+  return true;
 }
 
 export function safeEqual(a: string, b: string): boolean {
