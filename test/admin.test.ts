@@ -19,15 +19,19 @@ async function connectedCtx(): Promise<BrandAgentContext> {
 
 // ── Auth ───────────────────────────────────────────────────────────────────
 
-test('admin auth is closed until a password and a secret are configured', () => {
+test('admin auth is closed until a password exists', async () => {
   const unset = createAdminAuth();
-  assert.equal(unset.isConfigured(), false);
-  assert.equal(unset.verifyPassword(''), false);
-  assert.equal(unset.verifySessionToken('anything'), false);
+  const status = await unset.status();
+
+  assert.equal(status.configured, false);
+  // No storage: nothing to set a password into, so no setup offer either.
+  assert.equal(status.needsSetup, false);
+  assert.equal(await unset.verifyPassword(''), false);
+  assert.equal(await unset.verifySessionToken('anything'), false);
 });
 
 test('login issues a session cookie the guard accepts', async () => {
-  const auth = createAdminAuth({ password: 'hunter2', sessionSecret: 'x'.repeat(32) });
+  const auth = createAdminAuth({ password: 'hunter2hunter2', sessionSecret: 'x'.repeat(32) });
 
   const wrong = await auth.handlers.POST(
     new Request('https://example.com/session', { method: 'POST', body: JSON.stringify({ password: 'nope' }) }),
@@ -35,7 +39,7 @@ test('login issues a session cookie the guard accepts', async () => {
   assert.equal(wrong.status, 401);
 
   const right = await auth.handlers.POST(
-    new Request('https://example.com/session', { method: 'POST', body: JSON.stringify({ password: 'hunter2' }) }),
+    new Request('https://example.com/session', { method: 'POST', body: JSON.stringify({ password: 'hunter2hunter2' }) }),
   );
   assert.equal(right.status, 200);
 
@@ -44,30 +48,146 @@ test('login issues a session cookie the guard accepts', async () => {
   assert.match(setCookie, /SameSite=Lax/);
 
   const token = /clarity_brand_agent_admin=([^;]+)/.exec(setCookie)?.[1] ?? '';
-  assert.equal(auth.verifySessionToken(token), true);
+  assert.equal(await auth.verifySessionToken(token), true);
   assert.equal(
-    auth.isAuthenticated(new Request(SITE, { headers: { cookie: `clarity_brand_agent_admin=${token}` } })),
+    await auth.isAuthenticated(new Request(SITE, { headers: { cookie: `clarity_brand_agent_admin=${token}` } })),
     true,
   );
-  assert.equal(auth.isAuthenticated(new Request(SITE)), false);
+  assert.equal(await auth.isAuthenticated(new Request(SITE)), false);
 });
 
-test('a session token cannot be replayed as a CSRF token, or vice versa', () => {
-  const auth = createAdminAuth({ password: 'hunter2', sessionSecret: 'x'.repeat(32) });
-  const csrf = auth.issueCsrf();
+test('a session token cannot be replayed as a CSRF token, or vice versa', async () => {
+  const auth = createAdminAuth({ password: 'hunter2hunter2', sessionSecret: 'x'.repeat(32) });
+  const csrf = await auth.issueCsrf();
 
-  assert.equal(auth.verifyCsrf(csrf), true);
-  assert.equal(auth.verifySessionToken(csrf), false);
-  assert.equal(auth.verifyCsrf(`${csrf}tampered`), false);
+  assert.equal(await auth.verifyCsrf(csrf), true);
+  assert.equal(await auth.verifySessionToken(csrf), false);
+  assert.equal(await auth.verifyCsrf(`${csrf}tampered`), false);
 
-  // A token signed with a different secret must not verify here.
-  const other = createAdminAuth({ password: 'hunter2', sessionSecret: 'y'.repeat(32) });
-  assert.equal(auth.verifyCsrf(other.issueCsrf()), false);
+  const other = createAdminAuth({ password: 'hunter2hunter2', sessionSecret: 'y'.repeat(32) });
+  assert.equal(await auth.verifyCsrf(await other.issueCsrf()), false);
 });
 
-test('expired tokens are rejected', () => {
-  const auth = createAdminAuth({ password: 'hunter2', sessionSecret: 'x'.repeat(32), csrfTtlSeconds: -1 });
-  assert.equal(auth.verifyCsrf(auth.issueCsrf()), false);
+test('expired tokens are rejected', async () => {
+  const auth = createAdminAuth({ password: 'hunter2hunter2', sessionSecret: 'x'.repeat(32), csrfTtlSeconds: -1 });
+  assert.equal(await auth.verifyCsrf(await auth.issueCsrf()), false);
+});
+
+// ── First-run setup ────────────────────────────────────────────────────────
+
+function setupAuth() {
+  const logs: string[] = [];
+  const auth = createAdminAuth({ storage: memoryStorage(), logger: (message) => logs.push(message) });
+  return { auth, logs };
+}
+
+test('an unconfigured panel offers setup and announces a token in the log', async () => {
+  const { auth, logs } = setupAuth();
+
+  const status = await auth.handlers.GET();
+  assert.deepEqual(await status.json(), { configured: false, needsSetup: true, source: 'none' });
+
+  const token = await auth.announceSetupToken();
+  assert.ok(token && token.length > 20);
+  // Announced once, and only to the server's own log.
+  assert.equal(logs.length, 1);
+  assert.ok(logs[0]?.includes(token));
+});
+
+test('setup needs the right token and a long enough password', async () => {
+  const { auth } = setupAuth();
+  const token = (await auth.announceSetupToken()) ?? '';
+
+  assert.deepEqual(await auth.setup({ token: 'guessed', password: 'a-good-password' }), {
+    ok: false,
+    error: 'Wrong setup token. It is printed in the server log.',
+  });
+  assert.equal((await auth.setup({ token, password: 'short' })).ok, false);
+  assert.equal((await auth.status()).configured, false);
+
+  assert.deepEqual(await auth.setup({ token, password: 'a-good-password' }), { ok: true });
+  assert.deepEqual(await auth.status(), { configured: true, needsSetup: false, source: 'storage' });
+  assert.equal(await auth.verifyPassword('a-good-password'), true);
+  assert.equal(await auth.verifyPassword('a-good-passwore'), false);
+});
+
+test('the setup token is consumed: a second claim is refused', async () => {
+  const { auth } = setupAuth();
+  const token = (await auth.announceSetupToken()) ?? '';
+
+  assert.equal((await auth.setup({ token, password: 'first-password' })).ok, true);
+  assert.deepEqual(await auth.setup({ token, password: 'attacker-password' }), {
+    ok: false,
+    error: 'A password is already set.',
+  });
+  assert.equal(await auth.verifyPassword('first-password'), true);
+});
+
+test('setup through the route handler signs the claimant straight in', async () => {
+  const { auth } = setupAuth();
+  const token = (await auth.announceSetupToken()) ?? '';
+
+  const res = await auth.handlers.PUT(
+    new Request(`${SITE}/session`, { method: 'PUT', body: JSON.stringify({ token, password: 'a-good-password' }) }),
+  );
+
+  assert.equal(res.status, 200);
+  const cookie = /clarity_brand_agent_admin=([^;]+)/.exec(res.headers.get('set-cookie') ?? '')?.[1] ?? '';
+  assert.equal(await auth.verifySessionToken(cookie), true);
+});
+
+test('the stored password is a scrypt hash, and the session secret persists', async () => {
+  const storage = memoryStorage();
+  const auth = createAdminAuth({ storage, logger: () => {} });
+  const token = (await auth.announceSetupToken()) ?? '';
+  await auth.setup({ token, password: 'a-good-password' });
+
+  const stored = await storage.get('brandagent_admin_password');
+  assert.ok(stored?.startsWith('scrypt$'));
+  assert.ok(!stored?.includes('a-good-password'));
+  assert.equal(await storage.get('brandagent_admin_setup_token'), null);
+
+  // A second instance over the same storage keeps issuing valid sessions.
+  const restarted = createAdminAuth({ storage, logger: () => {} });
+  const cookieToken = /clarity_brand_agent_admin=([^;]+)/.exec(await auth.sessionCookie())?.[1] ?? '';
+  assert.equal(await restarted.verifySessionToken(cookieToken), true);
+});
+
+test('an env password pins the panel: no setup, no change', async () => {
+  const auth = createAdminAuth({ password: 'from-the-environment', storage: memoryStorage(), logger: () => {} });
+
+  assert.deepEqual(await auth.status(), { configured: true, needsSetup: false, source: 'env' });
+  assert.equal(await auth.announceSetupToken(), null);
+  assert.equal((await auth.setup({ token: 'anything', password: 'a-good-password' })).ok, false);
+  assert.equal(
+    (await auth.changePassword({ currentPassword: 'from-the-environment', newPassword: 'a-good-password' })).ok,
+    false,
+  );
+});
+
+test('changing the password needs the current one', async () => {
+  const { auth } = setupAuth();
+  const token = (await auth.announceSetupToken()) ?? '';
+  await auth.setup({ token, password: 'first-password' });
+
+  assert.equal((await auth.changePassword({ currentPassword: 'wrong', newPassword: 'second-password' })).ok, false);
+  assert.equal((await auth.changePassword({ currentPassword: 'first-password', newPassword: 'short' })).ok, false);
+  assert.equal(
+    (await auth.changePassword({ currentPassword: 'first-password', newPassword: 'second-password' })).ok,
+    true,
+  );
+
+  assert.equal(await auth.verifyPassword('second-password'), true);
+  assert.equal(await auth.verifyPassword('first-password'), false);
+});
+
+test('a closed setup window refuses the claim even with the right token', async () => {
+  const auth = createAdminAuth({ storage: memoryStorage(), logger: () => {}, setupWindowMs: -1 });
+  const token = (await auth.announceSetupToken()) ?? '';
+
+  const result = await auth.setup({ token, password: 'a-good-password' });
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? '', /setup window has closed/);
 });
 
 // ── Embed URL ──────────────────────────────────────────────────────────────
@@ -112,7 +232,7 @@ test('the admin API refuses unauthorized callers', async () => {
 
 test('the admin status hands the panel a nonce and a ready-to-frame embed URL', async () => {
   const ctx = await connectedCtx();
-  const auth = createAdminAuth({ password: 'hunter2', sessionSecret: 'x'.repeat(32) });
+  const auth = createAdminAuth({ password: 'hunter2hunter2', sessionSecret: 'x'.repeat(32) });
   const handlers = createAdminHandlers(ctx, {
     authorize: () => true,
     csrf: { issue: () => auth.issueCsrf(), verify: (token) => auth.verifyCsrf(token) },
@@ -124,13 +244,13 @@ test('the admin status hands the panel a nonce and a ready-to-frame embed URL', 
   assert.equal(res.status, 200);
   assert.equal(body.connected, true);
   assert.equal(body.embedOrigin, 'https://clarity.microsoft.com');
-  assert.ok(body.csrfToken && auth.verifyCsrf(body.csrfToken));
+  assert.ok(body.csrfToken && (await auth.verifyCsrf(body.csrfToken)));
   assert.ok(body.embedUrl?.includes(`nonce=${encodeURIComponent(body.csrfToken)}`));
 });
 
 test('mutating admin actions require a valid nonce', async () => {
   const ctx = await connectedCtx();
-  const auth = createAdminAuth({ password: 'hunter2', sessionSecret: 'x'.repeat(32) });
+  const auth = createAdminAuth({ password: 'hunter2hunter2', sessionSecret: 'x'.repeat(32) });
   const handlers = createAdminHandlers(ctx, {
     authorize: () => true,
     csrf: { issue: () => auth.issueCsrf(), verify: (token) => auth.verifyCsrf(token) },
@@ -148,7 +268,7 @@ test('mutating admin actions require a valid nonce', async () => {
   const ok = await handlers.POST(
     new Request(SITE, {
       method: 'POST',
-      body: JSON.stringify({ action: 'set-agent-enabled', enabled: false, csrf: auth.issueCsrf() }),
+      body: JSON.stringify({ action: 'set-agent-enabled', enabled: false, csrf: await auth.issueCsrf() }),
     }),
   );
   assert.equal(ok.status, 200);

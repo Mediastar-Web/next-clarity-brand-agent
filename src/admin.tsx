@@ -36,6 +36,9 @@ export interface BrandAgentAdminProps {
 
 type LogEntry = { at: string; message: string; tone: 'info' | 'ok' | 'error' };
 
+/** What the session endpoint says about the admin password. */
+type AuthInfo = { configured: boolean; needsSetup: boolean; source: 'env' | 'storage' | 'none' };
+
 const styles = {
   root: {
     fontFamily:
@@ -109,6 +112,10 @@ export function BrandAgentAdmin({
   const [password, setPassword] = useState('');
   const [projectDraft, setProjectDraft] = useState('');
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [authInfo, setAuthInfo] = useState<AuthInfo | null>(null);
+  const [setupToken, setSetupToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [showPasswordChange, setShowPasswordChange] = useState(false);
 
   // The bridge reads the freshest status without re-subscribing on every change.
   const statusRef = useRef<AdminStatus | null>(null);
@@ -119,6 +126,17 @@ export function BrandAgentAdmin({
   }, []);
 
   const refresh = useCallback(async () => {
+    // Unauthenticated and cheap: tells us whether to show a login form or a
+    // first-run setup form, and whether the password can be changed at all.
+    if (sessionPath) {
+      try {
+        const res = await fetch(sessionPath, { cache: 'no-store' });
+        if (res.ok) setAuthInfo((await res.json()) as AuthInfo);
+      } catch {
+        // Ignored: the panel still works, it just cannot offer setup.
+      }
+    }
+
     try {
       const res = await fetch(apiPath, { cache: 'no-store' });
       if (res.status === 401 || res.status === 403) {
@@ -136,7 +154,7 @@ export function BrandAgentAdmin({
     } catch {
       setState('error');
     }
-  }, [apiPath]);
+  }, [apiPath, sessionPath]);
 
   useEffect(() => {
     void refresh();
@@ -233,13 +251,72 @@ export function BrandAgentAdmin({
     return () => window.removeEventListener('message', onMessage);
   }, [state, act, append]);
 
-  // ── Login ────────────────────────────────────────────────────────────────
+  // ── Login / prima configurazione ─────────────────────────────────────────
   if (state === 'unauthorized') {
     if (!sessionPath) {
       return (
         <div style={styles.root}>
           <strong>Not authorized.</strong>
           <span style={{ opacity: 0.7, fontSize: 13 }}>Sign in to your admin area, then reload this page.</span>
+        </div>
+      );
+    }
+
+    // No password anywhere yet: offer to set one. Gated by the token the server
+    // printed to its own log — without it, whoever loads this page first would
+    // simply claim the panel.
+    if (authInfo?.needsSetup) {
+      return (
+        <div style={styles.root}>
+          <strong>Brand Agent — first run</strong>
+          <span style={{ opacity: 0.7, fontSize: 13 }}>
+            Choose the admin password. Paste the setup token your server printed to its log at startup — it proves
+            you own this deployment, not just its URL.
+          </span>
+          <form
+            style={{ ...styles.row, flexDirection: 'column', alignItems: 'stretch', gap: 8, maxWidth: 420 }}
+            onSubmit={async (event) => {
+              event.preventDefault();
+              setBusy(true);
+              try {
+                const res = await fetch(sessionPath, {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ token: setupToken.trim(), password }),
+                });
+                if (res.ok) {
+                  setPassword('');
+                  setSetupToken('');
+                  setState('loading');
+                  await refresh();
+                } else {
+                  const data = (await res.json().catch(() => ({}))) as { error?: string };
+                  append(data.error ?? 'Setup failed.', 'error');
+                }
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            <input
+              style={styles.input}
+              value={setupToken}
+              placeholder="Setup token (from the server log)"
+              onChange={(event) => setSetupToken(event.target.value)}
+            />
+            <input
+              style={styles.input}
+              type="password"
+              value={password}
+              autoComplete="new-password"
+              placeholder="New admin password (10+ characters)"
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <button style={styles.button} type="submit" disabled={busy}>
+              Set password and sign in
+            </button>
+          </form>
+          {log.length > 0 && <div style={styles.log}>{log[0]?.message}</div>}
         </div>
       );
     }
@@ -368,6 +445,65 @@ export function BrandAgentAdmin({
           Save project id
         </button>
       </div>
+
+      {sessionPath && authInfo?.source === 'storage' && (
+        <div style={styles.row}>
+          {showPasswordChange ? (
+            <form
+              style={styles.row}
+              onSubmit={async (event) => {
+                event.preventDefault();
+                setBusy(true);
+                try {
+                  const res = await fetch(sessionPath, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ currentPassword: password, newPassword }),
+                  });
+                  const data = (await res.json().catch(() => ({}))) as { error?: string };
+                  if (res.ok) {
+                    append('password changed', 'ok');
+                    setShowPasswordChange(false);
+                  } else {
+                    append(data.error ?? 'Could not change the password.', 'error');
+                  }
+                } finally {
+                  setPassword('');
+                  setNewPassword('');
+                  setBusy(false);
+                }
+              }}
+            >
+              <input
+                style={styles.input}
+                type="password"
+                value={password}
+                autoComplete="current-password"
+                placeholder="Current password"
+                onChange={(event) => setPassword(event.target.value)}
+              />
+              <input
+                style={styles.input}
+                type="password"
+                value={newPassword}
+                autoComplete="new-password"
+                placeholder="New password (10+ characters)"
+                onChange={(event) => setNewPassword(event.target.value)}
+              />
+              <button style={styles.button} type="submit" disabled={busy}>
+                Save
+              </button>
+              <button style={styles.button} type="button" onClick={() => setShowPasswordChange(false)}>
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <button style={styles.button} onClick={() => setShowPasswordChange(true)}>
+              Change admin password
+            </button>
+          )}
+        </div>
+      )}
 
       {log.length > 0 && (
         <div style={styles.log}>

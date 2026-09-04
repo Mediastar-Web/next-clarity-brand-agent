@@ -371,7 +371,10 @@ export interface AdminHandlerOptions {
    * message-driven action really came from a dashboard the admin opened —
    * exactly what `wp_verify_nonce()` does in the plugin. Strongly recommended.
    */
-  csrf?: { issue(): string; verify(token: string | undefined | null): boolean };
+  csrf?: {
+    issue(): string | Promise<string>;
+    verify(token: string | undefined | null): boolean | Promise<boolean>;
+  };
 
   /** Deep-link the embedded dashboard to a sub-page. */
   iframeRedirect?: string;
@@ -398,7 +401,7 @@ export function createAdminHandlers(
       const status = await getStatus(ctx);
       // Issue the nonce and build the iframe URL here, server-side: the panel
       // is a client component and must never see the signing secret.
-      const csrfToken = options.csrf?.issue();
+      const csrfToken = await options.csrf?.issue();
 
       return noStore(
         Response.json({
@@ -436,7 +439,7 @@ export function createAdminHandlers(
       if (options.csrf) {
         const token =
           (typeof body.csrf === 'string' ? body.csrf : null) ?? request.headers.get('x-clarity-csrf');
-        if (!options.csrf.verify(token)) {
+        if (!(await options.csrf.verify(token))) {
           return Response.json({ error: 'Invalid or expired nonce.' }, { status: 403 });
         }
       }

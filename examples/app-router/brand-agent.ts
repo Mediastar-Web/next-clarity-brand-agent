@@ -5,12 +5,14 @@ import { createAdminAuth, createBrandAgent, fileStorage, sitemapContentProvider 
 
 const siteUrl = process.env.BRAND_AGENT_SITE_URL ?? 'https://example.com';
 
+// Must survive restarts and deploys: point it at a persistent volume. Shared
+// with the admin auth below, which keeps the password there too.
+const storage = fileStorage({ path: process.env.BRAND_AGENT_STATE_PATH ?? '/data/brand-agent.json' });
+
 export const brandAgent = createBrandAgent({
   siteUrl,
   clarityProjectId: process.env.CLARITY_PROJECT_ID,
-
-  // Must survive restarts and deploys: point it at a persistent volume.
-  storage: fileStorage({ path: process.env.BRAND_AGENT_STATE_PATH ?? '/data/brand-agent.json' }),
+  storage,
 
   // Encrypts the HMAC secret at rest (AES-256-CBC). Generate with
   // `openssl rand -base64 32`. Pass `null` to store it in clear.
@@ -28,8 +30,13 @@ export const brandAgent = createBrandAgent({
 /**
  * Gate for the control panel. Drop this if your app already has an admin
  * session — pass your own check to `createAdminHandlers({ authorize })`.
+ *
+ * With no `password` here, the first person to open the panel is invited to
+ * choose one — but only if they can paste the setup token the server prints to
+ * its log at startup. Set BRAND_AGENT_ADMIN_PASSWORD instead to pin it from the
+ * environment and disable that flow entirely.
  */
 export const adminAuth = createAdminAuth({
   password: process.env.BRAND_AGENT_ADMIN_PASSWORD,
-  sessionSecret: process.env.BRAND_AGENT_SESSION_SECRET,
+  storage,
 });

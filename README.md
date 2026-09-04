@@ -252,6 +252,7 @@ why, and what protects them.
 | `api/config/status` | Anyone | Nothing. It returns two booleans and the public CDN URL of the widget loader. |
 | `…/connect-verify` | The Clarity dashboard | A one-time 64-hex nonce, stored only as a SHA-256 digest, valid 10 minutes, and only ever live while a connect *you started* is in flight. |
 | Admin API + panel | You | Your session check **and** a CSRF nonce. Both mandatory. |
+| Session endpoint (`GET`) | Anyone | Nothing. It says whether a password exists — setting one still needs the token from the server log. |
 
 **What an attacker on the open routes can do:** spend your Brand Agent quota by
 hammering `config/read` / `v1/init`, and read whether the widget is published.
@@ -270,14 +271,18 @@ Recommendations, in order of how much they matter:
 3. **Treat the state file like a credential store.** Persistent volume,
    restricted permissions, out of your repo and out of backups you share.
 4. **Give the panel its own session**, separate from any public login your app
-   has. `createAdminAuth` uses an HttpOnly, SameSite=Lax, Secure cookie and a
-   constant-time password compare, with login attempts rate-limited per IP.
-5. **Gate the panel at the edge too if you can** — an IP allow-list or a VPN in
+   has. `createAdminAuth` uses an HttpOnly, SameSite=Lax, Secure cookie, a
+   scrypt-hashed password, constant-time comparisons, and per-IP rate limiting
+   on both login and setup attempts.
+5. **Claim the panel promptly.** While no password is set, the panel advertises
+   that fact (as WordPress does) and anyone holding the setup token can claim
+   it. Set the password on your first visit, or pin one from the environment.
+6. **Gate the panel at the edge too if you can** — an IP allow-list or a VPN in
    front of `/admin` costs nothing and removes the whole surface.
-6. **Keep the proxy gate as defence in depth, never as the only check.** A
+7. **Keep the proxy gate as defence in depth, never as the only check.** A
    matcher change must not be what stands between the internet and `connect`;
    the route handlers verify the session again for exactly that reason.
-7. **Rotate by disconnecting.** `disconnect` tells the backend to tear the site
+8. **Rotate by disconnecting.** `disconnect` tells the backend to tear the site
    down and then wipes local state; reconnecting mints a fresh secret.
 
 Two deliberate deviations from the plugin, both hardening:
@@ -377,6 +382,10 @@ including `www` and the scheme.
 frame-ancestors or X-Frame-Options refusal, and confirm `embedUrl` in the admin
 status response carries `integration=Wordpress` and both `*BrandAgentSupported`
 flags.
+
+**The setup form says the token is wrong.** It is regenerated only while no
+password exists, and it is printed once per process — scroll back through the
+server log, or restart the app to have it announced again.
 
 **The dashboard's buttons do nothing.** Every bridge action needs a valid nonce.
 If the panel has been open for hours the CSRF token has expired: reload it.
