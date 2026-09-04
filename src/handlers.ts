@@ -105,19 +105,59 @@ function proxyHeaders(request: Request, base: Record<string, string>): Record<st
 }
 
 /**
- * The first few hundred bytes of an upstream error, for the log.
+ * What an upstream error says, for the log — and nothing else it might carry.
  *
- * A bare status number cannot tell "your signature is wrong" from "this agent
- * is not published yet", and the backend writes which one it is in the body —
- * which used to be discarded. Nothing of ours is in there; it is Microsoft's
- * explanation, trimmed so a log line stays a line.
+ * A bare status cannot tell "your signature is wrong" from "this agent is not
+ * published yet"; the backend writes which one it is in the body. Two things
+ * keep that body from becoming a liability. It is read through a bounded
+ * reader — at most 4 KB, at most two seconds, then cancelled — because a
+ * non-2xx `v1/init` can still be an open event stream, and `text()` on it
+ * never returns. And only named error fields of a JSON body are kept, each
+ * cut short: a body that echoed the request would hand the log a signature
+ * that stays valid for five minutes, and raw text is exactly what would
+ * carry it.
  */
-async function upstreamExcerpt(upstream: Response): Promise<string> {
+async function upstreamExcerpt(upstream: Response): Promise<Record<string, string>> {
+  const contentType = upstream.headers.get('content-type') ?? '';
+  const summary: Record<string, string> = { contentType: contentType.split(';')[0]?.trim() ?? '' };
+
+  if (!upstream.body) return summary;
+
+  const reader = upstream.body.getReader();
+  const timer = setTimeout(() => void reader.cancel().catch(() => undefined), 2_000);
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+
   try {
-    return (await upstream.text()).replace(/\s+/g, ' ').trim().slice(0, 300);
+    while (received < 4_096) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.byteLength;
+    }
   } catch {
-    return '';
+    // Cancelled by the timer, or the stream failed: whatever arrived is enough.
+  } finally {
+    clearTimeout(timer);
+    void reader.cancel().catch(() => undefined);
   }
+
+  summary.bytesRead = String(received);
+  if (!contentType.includes('json')) return summary;
+
+  try {
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (parsed && typeof parsed === 'object') {
+      for (const field of ['error', 'error_code', 'errorCode', 'message', 'title', 'detail', 'code']) {
+        const value = (parsed as Record<string, unknown>)[field];
+        if (typeof value === 'string' || typeof value === 'number') summary[field] = String(value).slice(0, 160);
+      }
+    }
+  } catch {
+    // Truncated or not JSON after all: the byte count and type still say something.
+  }
+
+  return summary;
 }
 
 /** Path under the proxy base, e.g. `api/content/fetch`. */
@@ -411,6 +451,7 @@ async function handleContentFetch(ctx: BrandAgentContext, request: Request): Pro
   const perPage = Math.min(100, Math.max(1, whole(body.per_page) ?? 50));
 
   if (!ctx.content) {
+    ctx.log('brand-agent: content/fetch served', { page, perPage, count: 0, total: 0, provider: 'none' });
     return noStore(wpJsonSuccess({ page, per_page: perPage, total: 0, total_pages: 0, count: 0, items: [] }));
   }
 

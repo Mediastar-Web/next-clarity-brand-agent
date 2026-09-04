@@ -426,3 +426,57 @@ test('a live connect lock refuses, an expired one is taken over', async () => {
     globalThis.fetch = original;
   }
 });
+
+test('an upstream refusal is logged by its fields, bounded, and never by its raw text', async () => {
+  const logs: Array<[string, Record<string, unknown> | undefined]> = [];
+  const ctx = resolveConfig({
+    siteUrl: SITE,
+    storage: memoryStorage(),
+    encryptionKey: 'k',
+    rateLimit: false,
+    backendBaseUrl: 'https://backend.test',
+    logger: (message, context) => logs.push([message, context]),
+  });
+  await setHmacSecret(ctx, SECRET);
+  const { GET } = createProxyHandlers(ctx);
+
+  const original = globalThis.fetch;
+  let mode: 'json' | 'endless' = 'json';
+  globalThis.fetch = (async () => {
+    if (mode === 'json') {
+      // Echoes the request, the way a careless error page might.
+      return new Response(
+        JSON.stringify({ error: 'agent_not_published', message: 'No published agent for this client.', echo: 'X-WordPress-Signature: abc==' }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      );
+    }
+    // A stream that never ends and never says anything useful.
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new TextEncoder().encode('data: X-WordPress-Signature: leak==\n\n'));
+      },
+    });
+    return new Response(stream, { status: 401, headers: { 'content-type': 'text/event-stream' } });
+  }) as typeof fetch;
+
+  try {
+    await GET(new Request(`${SITE}/a/msba/api/config/read?clientId=example-com`));
+    const [, json] = logs.find(([message]) => message.includes('config/read non-success')) ?? [];
+    const upstream = json?.upstream as Record<string, string>;
+    assert.equal(upstream.error, 'agent_not_published');
+    assert.equal(upstream.message, 'No published agent for this client.');
+    assert.equal(upstream.echo, undefined, 'unlisted fields must not reach the log');
+    assert.ok(!JSON.stringify(json).includes('abc=='), 'nothing echoed from the request may be logged');
+
+    mode = 'endless';
+    const started = Date.now();
+    await GET(new Request(`${SITE}/a/msba/api/v1/init?clientId=example-com`));
+    assert.ok(Date.now() - started < 5_000, 'an endless stream must not hang the request');
+    const [, sse] = logs.find(([message]) => message.includes('v1/init non-success')) ?? [];
+    const bounded = sse?.upstream as Record<string, string>;
+    assert.ok(Number(bounded.bytesRead) <= 8_192, `read was not bounded: ${bounded.bytesRead}`);
+    assert.ok(!JSON.stringify(sse).includes('leak=='), 'a non-JSON body must not be logged');
+  } finally {
+    globalThis.fetch = original;
+  }
+});
