@@ -123,17 +123,20 @@ async function upstreamExcerpt(upstream: Response): Promise<Record<string, strin
 
   if (!upstream.body) return summary;
 
+  const LIMIT = 4_096;
   const reader = upstream.body.getReader();
-  const timer = setTimeout(() => void reader.cancel().catch(() => undefined), 2_000);
+  const timer = setTimeout(() => void reader.cancel().catch(() => undefined), 1_000);
   const chunks: Uint8Array[] = [];
   let received = 0;
 
   try {
-    while (received < 4_096) {
+    while (received < LIMIT) {
       const { done, value } = await reader.read();
       if (done) break;
-      chunks.push(value);
-      received += value.byteLength;
+      // A single chunk can be any size; keep only what fits in the budget.
+      const kept = value.byteLength > LIMIT - received ? value.subarray(0, LIMIT - received) : value;
+      chunks.push(kept);
+      received += kept.byteLength;
     }
   } catch {
     // Cancelled by the timer, or the stream failed: whatever arrived is enough.
@@ -143,14 +146,14 @@ async function upstreamExcerpt(upstream: Response): Promise<Record<string, strin
   }
 
   summary.bytesRead = String(received);
-  if (!contentType.includes('json')) return summary;
+  if (!contentType.toLowerCase().includes('json')) return summary;
 
   try {
     const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     if (parsed && typeof parsed === 'object') {
       for (const field of ['error', 'error_code', 'errorCode', 'message', 'title', 'detail', 'code']) {
         const value = (parsed as Record<string, unknown>)[field];
-        if (typeof value === 'string' || typeof value === 'number') summary[field] = String(value).slice(0, 160);
+        if (typeof value === 'string' || typeof value === 'number') summary[field] = redactTokens(String(value));
       }
     }
   } catch {
@@ -158,6 +161,17 @@ async function upstreamExcerpt(upstream: Response): Promise<Record<string, strin
   }
 
   return summary;
+}
+
+/**
+ * Anything that looks like a token — a run of base64/base64url characters long
+ * enough to be a signature, a nonce or a secret — is replaced before it can be
+ * logged, even inside a human-readable message. An error text that quoted our
+ * own `X-WordPress-Signature` back at us would otherwise put a credential that
+ * stays valid for five minutes into the log.
+ */
+function redactTokens(value: string): string {
+  return value.replace(/[A-Za-z0-9+/_-]{24,}={0,2}/g, '[redacted]').slice(0, 160);
 }
 
 /** Path under the proxy base, e.g. `api/content/fetch`. */

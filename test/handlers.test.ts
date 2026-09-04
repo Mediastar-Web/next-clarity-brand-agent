@@ -446,14 +446,21 @@ test('an upstream refusal is logged by its fields, bounded, and never by its raw
     if (mode === 'json') {
       // Echoes the request, the way a careless error page might.
       return new Response(
-        JSON.stringify({ error: 'agent_not_published', message: 'No published agent for this client.', echo: 'X-WordPress-Signature: abc==' }),
+        JSON.stringify({
+          error: 'agent_not_published',
+          // A message that quotes our own signature back, base64 and all.
+          message: 'Bad signature: dGhpcy1pcy1hLXNpZ25hdHVyZS1sb25nLWVub3VnaA== for client',
+          echo: 'X-WordPress-Signature: abc==',
+        }),
         { status: 401, headers: { 'content-type': 'application/json' } },
       );
     }
     // A stream that never ends and never says anything useful.
+    // Endless, and in chunks far larger than the read budget.
+    const chunk = new TextEncoder().encode('data: X-WordPress-Signature: leak==\n\n'.repeat(2_000));
     const stream = new ReadableStream<Uint8Array>({
       pull(controller) {
-        controller.enqueue(new TextEncoder().encode('data: X-WordPress-Signature: leak==\n\n'));
+        controller.enqueue(chunk);
       },
     });
     return new Response(stream, { status: 401, headers: { 'content-type': 'text/event-stream' } });
@@ -464,7 +471,7 @@ test('an upstream refusal is logged by its fields, bounded, and never by its raw
     const [, json] = logs.find(([message]) => message.includes('config/read non-success')) ?? [];
     const upstream = json?.upstream as Record<string, string>;
     assert.equal(upstream.error, 'agent_not_published');
-    assert.equal(upstream.message, 'No published agent for this client.');
+    assert.equal(upstream.message, 'Bad signature: [redacted] for client', 'a token inside a message is redacted');
     assert.equal(upstream.echo, undefined, 'unlisted fields must not reach the log');
     assert.ok(!JSON.stringify(json).includes('abc=='), 'nothing echoed from the request may be logged');
 
@@ -474,7 +481,7 @@ test('an upstream refusal is logged by its fields, bounded, and never by its raw
     assert.ok(Date.now() - started < 5_000, 'an endless stream must not hang the request');
     const [, sse] = logs.find(([message]) => message.includes('v1/init non-success')) ?? [];
     const bounded = sse?.upstream as Record<string, string>;
-    assert.ok(Number(bounded.bytesRead) <= 8_192, `read was not bounded: ${bounded.bytesRead}`);
+    assert.ok(Number(bounded.bytesRead) <= 4_096, `read was not bounded: ${bounded.bytesRead}`);
     assert.ok(!JSON.stringify(sse).includes('leak=='), 'a non-JSON body must not be logged');
   } finally {
     globalThis.fetch = original;
