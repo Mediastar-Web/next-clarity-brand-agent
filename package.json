@@ -17,6 +17,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./client": "./src/client.tsx",
+    "./admin": "./src/admin.tsx",
+    "./tag": "./src/tag.tsx",
+    "./auth": "./src/auth.ts",
     "./proxy": "./src/proxy.ts",
     "./sqlite": "./src/storage/sqlite.ts",
     "./package.json": "./package.json"

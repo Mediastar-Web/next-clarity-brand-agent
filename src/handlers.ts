@@ -1,7 +1,9 @@
 import { PROXY_BASE_PATH, type BrandAgentContext } from './config.js';
+import { buildEmbedUrl, embedOrigin, isValidProjectId } from './embed.js';
+import { clientIp } from './rate-limit.js';
 import { getHmacSecret, verifyIncomingSignature } from './crypto.js';
 import { signedBackendGet } from './backend.js';
-import { connect, consumeConnectNonce, disconnect, getProjectId, getStatus, setProjectId } from './connect.js';
+import { connect, consumeConnectNonce, disconnect, getProjectId, getSiteId, getStatus, setProjectId } from './connect.js';
 import { KEYS } from './config.js';
 import { syncAllContent } from './webhooks.js';
 
@@ -37,6 +39,17 @@ function noStore(response: Response): Response {
   return response;
 }
 
+/**
+ * Throttle the two endpoints that must stay open to the public internet.
+ *
+ * `config/read` and `v1/init` are called by visitors' browsers, so they cannot
+ * carry a credential — which makes them a signed proxy anyone can drive. The
+ * limiter keeps a stranger from spending the site's Brand Agent quota.
+ */
+function rateLimited(ctx: BrandAgentContext, request: Request): boolean {
+  return ctx.widgetRateLimiter?.limited(clientIp(request)) ?? false;
+}
+
 /** Path under the proxy base, e.g. `api/config/read`. */
 function proxySubPath(request: Request): string {
   const { pathname } = new URL(request.url);
@@ -52,6 +65,8 @@ function proxySubPath(request: Request): string {
  * directly: only the site holds the secret.
  */
 async function handleConfigRead(ctx: BrandAgentContext, request: Request): Promise<Response> {
+  if (rateLimited(ctx, request)) return wpJsonError('Too many requests', 429);
+
   if (!(await getHmacSecret(ctx))) {
     return wpJsonError('HMAC secret not found. Please complete onboarding.', 401);
   }
@@ -97,6 +112,8 @@ async function handleConfigRead(ctx: BrandAgentContext, request: Request): Promi
  * soon as the backend emits them.
  */
 async function handleInit(ctx: BrandAgentContext, request: Request): Promise<Response> {
+  if (rateLimited(ctx, request)) return wpJsonError('Too many requests', 429);
+
   if (!(await getHmacSecret(ctx))) {
     return wpJsonError('HMAC secret not found. Please complete onboarding.', 401);
   }
@@ -207,15 +224,21 @@ async function handleConfigUpdate(ctx: BrandAgentContext, request: Request): Pro
  * the agent, so it also carries the loader URL.
  */
 async function handleConfigStatus(ctx: BrandAgentContext): Promise<Response> {
-  const [inject, oauth] = await Promise.all([
+  const [inject, oauth, agentEnabled] = await Promise.all([
     ctx.storage.get(KEYS.injectScript),
     ctx.storage.get(KEYS.oauthSuccess),
+    ctx.storage.get(KEYS.agentEnabled),
   ]);
+
+  // The dashboard's agent switch (AGENT_ENABLED_CHANGE) rides on BAOauthSuccess
+  // in the plugin. We keep it as its own flag so turning the agent off never
+  // erases the record of a working connection, and fold it in only here.
+  const live = oauth === '1' && agentEnabled !== '0' ? '1' : '0';
 
   return noStore(
     wpJsonSuccess({
       BAInjectFrontendScript: inject ?? 'false',
-      BAOauthSuccess: oauth ?? '0',
+      BAOauthSuccess: live,
       pluginVersion: ctx.pluginVersion,
       frontendInjectionUrl: ctx.frontendInjectionUrl,
     }),
@@ -337,9 +360,21 @@ export function createConnectVerifyHandler(ctx: BrandAgentContext): RouteHandler
 export interface AdminHandlerOptions {
   /**
    * Decides whether the caller may manage the connection — the equivalent of
-   * `current_user_can('manage_options')`. Wire it to your own admin session.
+   * `current_user_can('manage_options')`. Wire it to your own admin session,
+   * or to `createAdminAuth()`.
    */
   authorize: (request: Request) => boolean | Promise<boolean>;
+
+  /**
+   * CSRF tokens. The issued token is handed to the embedded dashboard as its
+   * `nonce` and comes back inside every postMessage, so the panel can prove a
+   * message-driven action really came from a dashboard the admin opened —
+   * exactly what `wp_verify_nonce()` does in the plugin. Strongly recommended.
+   */
+  csrf?: { issue(): string; verify(token: string | undefined | null): boolean };
+
+  /** Deep-link the embedded dashboard to a sub-page. */
+  iframeRedirect?: string;
 }
 
 /**
@@ -359,7 +394,27 @@ export function createAdminHandlers(
     async GET(request) {
       const denied = await guard(request);
       if (denied) return denied;
-      return noStore(Response.json(await getStatus(ctx)));
+
+      const status = await getStatus(ctx);
+      // Issue the nonce and build the iframe URL here, server-side: the panel
+      // is a client component and must never see the signing secret.
+      const csrfToken = options.csrf?.issue();
+
+      return noStore(
+        Response.json({
+          ...status,
+          csrfToken,
+          embedOrigin: embedOrigin(ctx.embedBaseUrl),
+          embedUrl: buildEmbedUrl({
+            embedBaseUrl: ctx.embedBaseUrl,
+            siteUrl: ctx.siteUrl,
+            siteId: await getSiteId(ctx),
+            projectId: status.projectId,
+            nonce: csrfToken ?? '',
+            iframeRedirect: options.iframeRedirect,
+          }),
+        }),
+      );
     },
 
     async POST(request) {
@@ -376,6 +431,16 @@ export function createAdminHandlers(
 
       const action = typeof body.action === 'string' ? body.action : '';
 
+      // Every mutating action needs the nonce, whether it was triggered by a
+      // button in the panel or by a postMessage from the embedded dashboard.
+      if (options.csrf) {
+        const token =
+          (typeof body.csrf === 'string' ? body.csrf : null) ?? request.headers.get('x-clarity-csrf');
+        if (!options.csrf.verify(token)) {
+          return Response.json({ error: 'Invalid or expired nonce.' }, { status: 403 });
+        }
+      }
+
       switch (action) {
         case 'connect': {
           const result = await connect(ctx);
@@ -390,10 +455,22 @@ export function createAdminHandlers(
         }
 
         case 'set-project-id': {
-          const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : '';
-          if (!projectId) return Response.json({ error: 'projectId is required.' }, { status: 400 });
-          await setProjectId(ctx, projectId);
+          // Empty string is legal: it is how the dashboard unlinks a project.
+          const raw = typeof body.projectId === 'string' ? body.projectId.trim() : null;
+          if (raw === null || !isValidProjectId(raw)) {
+            return Response.json({ error: 'projectId must be alphanumeric.' }, { status: 400 });
+          }
+          await setProjectId(ctx, raw);
           return noStore(Response.json({ success: true, projectId: await getProjectId(ctx) }));
+        }
+
+        case 'set-agent-enabled': {
+          // The dashboard's on/off switch for the agent. Kept apart from the
+          // connection record; `api/config/status` folds the two together.
+          const enabled = body.enabled === true || body.enabled === 'true' || body.enabled === 1;
+          await ctx.storage.set(KEYS.agentEnabled, enabled ? '1' : '0');
+          ctx.log('brand-agent: agent switch', { enabled });
+          return noStore(Response.json({ success: true, agentEnabled: enabled }));
         }
 
         case 'set-inject': {

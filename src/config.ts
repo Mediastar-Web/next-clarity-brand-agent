@@ -1,8 +1,11 @@
+import { DEFAULT_EMBED_BASE_URL } from './embed.js';
+import { createRateLimiter, type RateLimiter } from './rate-limit.js';
 import type { BrandAgentConfigInput, BrandAgentContentProvider, BrandAgentLogger, BrandAgentStorage } from './types.js';
 
 /** Storage keys. Names match the plugin's WordPress options where one exists. */
 export const KEYS = {
   hmacSecret: 'brandagent_hmac_secret',
+  agentEnabled: 'brandagent_agent_enabled',
   hmacPlatform: 'brandagent_hmac_platform',
   oauthSuccess: 'BAOauthSuccess',
   injectScript: 'BAInjectFrontendScript',
@@ -54,7 +57,9 @@ export interface BrandAgentContext {
   clarityServerUrl: string;
   backendBaseUrl: string | null;
   frontendInjectionUrl: string;
+  embedBaseUrl: string;
   pluginVersion: string;
+  widgetRateLimiter: RateLimiter | null;
   log: BrandAgentLogger;
 }
 
@@ -77,6 +82,14 @@ export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
     clarityServerUrl: trimTrailingSlashes(input.clarityServerUrl?.trim() || DEFAULT_CLARITY_SERVER_URL),
     backendBaseUrl: input.backendBaseUrl ? trimTrailingSlashes(input.backendBaseUrl.trim()) : null,
     frontendInjectionUrl: input.frontendInjectionUrl?.trim() || DEFAULT_FRONTEND_INJECTION_URL,
+    embedBaseUrl: trimTrailingSlashes(input.embedBaseUrl?.trim() || DEFAULT_EMBED_BASE_URL),
+    widgetRateLimiter:
+      input.rateLimit === false
+        ? null
+        : createRateLimiter({
+            max: input.rateLimit?.max ?? 120,
+            windowMs: input.rateLimit?.windowMs ?? 60_000,
+          }),
     pluginVersion: input.pluginVersion?.trim() || '1.0.0',
     log: input.logger ?? (() => {}),
   };

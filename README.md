@@ -4,12 +4,13 @@ Connect a **Next.js** site to the **Microsoft Clarity Brand Agent** — the Clar
 AI chat agent that Microsoft currently ships only as a WordPress/WooCommerce
 plugin and a Shopify app.
 
-This package speaks the same protocol as the official [`microsoft-clarity`
-WordPress plugin](https://wordpress.org/plugins/microsoft-clarity/), in its
+This package is a port of the official [`microsoft-clarity` WordPress
+plugin](https://wordpress.org/plugins/microsoft-clarity/), in its
 **plain-WordPress** variant: the onboarding flow that works on a content site
-with no WooCommerce. Your Next.js app registers itself the way that plugin does,
-proxies the widget's calls with the same HMAC contract, and serves its content
-to the indexer.
+with no WooCommerce. Your app registers itself the way that plugin does, proxies
+the widget's calls with the same HMAC contract, serves its content to the
+indexer, and gives you the same control panel — the embedded Clarity dashboard —
+behind an admin gate of your choosing.
 
 > ### Read this before you install
 >
@@ -17,7 +18,7 @@ to the indexer.
 > Microsoft can change the contract at any time, and when it does, calls fail as
 > bare `401`s with no useful error. Nothing here defeats a security control —
 > ownership is still proven by a nonce loopback on a domain you control — but it
-> is an unofficial client for a moving target. Run it on your own domain; think
+> is an unofficial client for a moving target. Run it on a domain you own; think
 > twice before putting it on a client's production site.
 
 ---
@@ -44,8 +45,11 @@ Worth understanding before you debug anything.
      trailing slash, `.` `/` `:` replaced with `-`.
    - *Inbound* (backend → site), `X-BA-*` headers: HMAC over
      `siteUrl + timestamp + sha256(body)`, valid for five minutes.
-5. **Publish.** When you publish the agent from the Clarity dashboard, the
-   backend calls `api/config/update` on your site and flips
+5. **The dashboard drives everything else.** Linking a project, configuring the
+   agent and publishing it all happen inside an iframe of
+   `clarity.microsoft.com/embed`, which asks the host page — over `postMessage` —
+   to store a project id, toggle the agent, or run the connect. When you publish,
+   the backend calls `api/config/update` on your site and flips
    `BAInjectFrontendScript` to `true`. Only then does the widget load.
 
 `wordpressSiteId` is **not** issued by Microsoft — the plugin generates it
@@ -53,9 +57,24 @@ locally with `wp_generate_uuid4()`. It is not a gate.
 
 **The one thing that may still block you:** whether your `clarityProjectId` has
 to belong to a project the dashboard already considers "installed via the
-WordPress plugin". If Microsoft gates on that, no amount of correct headers
-gets you through, and `connect` comes back non-200. That is the single unknown
-this package cannot answer for you — it resolves by trying.
+WordPress plugin". If Microsoft gates on that, no amount of correct headers gets
+you through, and `connect` comes back non-200. That is the single unknown this
+package cannot answer for you — it resolves by trying.
+
+## What you get
+
+- **Connect handshake** with the nonce loopback, secret read-back and all the
+  failure modes the plugin guards against.
+- **Widget proxy** at `/a/msba` — config, and the chat SSE stream piped through
+  unbuffered.
+- **Inbound endpoints** the backend calls: publish flag and bulk content read,
+  both signature-verified.
+- **Control panel**: the embedded Clarity dashboard plus a `postMessage` bridge,
+  a status readout, and manual connect / disconnect / re-index controls.
+- **Admin auth** you can use as-is (password + signed session cookie + CSRF
+  nonce) or replace with your own.
+- **Content indexing** from your sitemap, or from any source you wire up.
+- **The Clarity analytics tag**, the other half of what the plugin installs.
 
 ## Install
 
@@ -86,7 +105,7 @@ A complete, copy-pasteable app lives in [`examples/app-router`](./examples/app-r
 
 ```ts
 // brand-agent.ts
-import { createBrandAgent, fileStorage, sitemapContentProvider } from 'next-clarity-brand-agent';
+import { createAdminAuth, createBrandAgent, fileStorage, sitemapContentProvider } from 'next-clarity-brand-agent';
 
 const siteUrl = 'https://example.com';
 
@@ -96,6 +115,11 @@ export const brandAgent = createBrandAgent({
   storage: fileStorage({ path: '/data/brand-agent.json' }),   // persistent volume
   encryptionKey: process.env.BRAND_AGENT_SECRET_KEY,          // openssl rand -base64 32
   content: sitemapContentProvider({ siteUrl }),
+});
+
+export const adminAuth = createAdminAuth({
+  password: process.env.BRAND_AGENT_ADMIN_PASSWORD,
+  sessionSecret: process.env.BRAND_AGENT_SESSION_SECRET,
 });
 ```
 
@@ -131,7 +155,6 @@ match on its own, so it gets rewritten first:
 
 ```ts
 // proxy.ts   (middleware.ts on Next 15)
-import { NextResponse } from 'next/server';
 import { brandAgentProxyMatchers, brandAgentRewrite } from 'next-clarity-brand-agent/proxy';
 
 export const config = { matcher: [...brandAgentProxyMatchers] };
@@ -150,42 +173,119 @@ export async function POST(request: Request, ctx: { params: Promise<{ path: stri
 }
 ```
 
-### 4. Render the widget
+### 4. Mount the control panel
+
+The API — privileged, and the only surface that can connect or disconnect the
+site:
+
+```ts
+// app/api/admin/brand-agent/route.ts
+const handlers = brandAgent.createAdminHandlers({
+  authorize: (request) => adminAuth.isAuthenticated(request),
+  csrf: { issue: () => adminAuth.issueCsrf(), verify: (token) => adminAuth.verifyCsrf(token) },
+});
+export const GET = handlers.GET;
+export const POST = handlers.POST;
+
+// app/api/admin/brand-agent/session/route.ts
+export const POST = adminAuth.handlers.POST;      // sign in
+export const DELETE = adminAuth.handlers.DELETE;  // sign out
+```
+
+The page:
+
+```tsx
+// app/admin/brand-agent/page.tsx
+import { BrandAgentAdmin } from 'next-clarity-brand-agent/admin';
+
+export const metadata = { robots: { index: false, follow: false } };
+
+export default function Page() {
+  return <BrandAgentAdmin apiPath="/api/admin/brand-agent" sessionPath="/api/admin/brand-agent/session" />;
+}
+```
+
+That page is the plugin's wp-admin screen: status, manual controls, and the
+embedded Clarity dashboard where you link the project, build the agent and
+publish it. The `postMessage` bridge is wired for you — project changes, the
+agent switch, and the dashboard-initiated connect — with an origin check on
+every message and a server-side nonce check on every action.
+
+**Already have an admin area?** Skip `createAdminAuth` and pass your own check
+to `authorize`. Keep a CSRF token of some kind: without it, any page on the
+internet could make a signed-in admin's browser POST `connect` to your site.
+
+### 5. Render the widget and the tag
 
 ```tsx
 import { BrandAgentWidget } from 'next-clarity-brand-agent/client';
+import { ClarityTag } from 'next-clarity-brand-agent/tag';
 
-<BrandAgentWidget />
+<ClarityTag projectId={process.env.NEXT_PUBLIC_CLARITY_PROJECT_ID} />   // in <head>
+<BrandAgentWidget />                                                     // anywhere
 ```
 
-It loads nothing until the backend has published the agent. The check runs
+`ClarityTag` renders an inline script and ships no JS bundle. `BrandAgentWidget`
+loads nothing until the backend has published the agent; the check runs
 client-side, after paint, against `api/config/status` — deliberately, so a flag
 that changes once a month does not opt every page out of static rendering.
 
-### 5. Connect
+### 6. Connect
 
-Expose the admin API behind your own auth and POST `{"action":"connect"}`:
+Open the panel and press **Connect** (or let the embedded dashboard do it during
+its own setup flow). **The site must be publicly reachable at `siteUrl` while you
+connect** — the dashboard calls back mid-handshake. `localhost` cannot work; use
+a tunnel with a stable hostname and set `siteUrl` to it.
 
-```ts
-const handlers = brandAgent.createAdminHandlers({ authorize: () => isAdmin() });
-export const GET = handlers.GET;
-export const POST = handlers.POST;
-```
+## Security model
 
-| Action | Effect |
-| --- | --- |
-| `connect` | Runs the handshake and stores the minted secret |
-| `disconnect` | Notifies the backend, then wipes local state |
-| `set-project-id` | Stores `projectId`, overriding the configured one |
-| `set-inject` | Local override of `BAInjectFrontendScript` (testing only) |
-| `sync-content` | Re-pushes every document as an `updated` webhook |
+Some of these routes have to be open to the internet. Here is exactly which,
+why, and what protects them.
 
-`GET` returns the status: `connected`, `unverified`, `injectFrontendScript`,
-`projectId`, `siteId`, `advertiserId`, `clientId`, `connectedAt`.
+| Route | Who calls it | What guards it |
+| --- | --- | --- |
+| `api/config/read`, `api/v1/init` | Your visitors' browsers | **Nothing can** — no credential can ride along. Rate-limited per IP (120/min by default). |
+| `api/config/update`, `api/content/fetch` | Microsoft's backend | Inbound HMAC: constant-time compare, five-minute window, site-URL match, body/query bound into the signature. |
+| `api/config/status` | Anyone | Nothing. It returns two booleans and the public CDN URL of the widget loader. |
+| `…/connect-verify` | The Clarity dashboard | A one-time 64-hex nonce, stored only as a SHA-256 digest, valid 10 minutes, and only ever live while a connect *you started* is in flight. |
+| Admin API + panel | You | Your session check **and** a CSRF nonce. Both mandatory. |
 
-**The site must be publicly reachable at `siteUrl` while you connect** — the
-dashboard calls back mid-handshake. `localhost` cannot work; use a tunnel with a
-stable hostname, and set `siteUrl` to that hostname.
+**What an attacker on the open routes can do:** spend your Brand Agent quota by
+hammering `config/read` / `v1/init`, and read whether the widget is published.
+**What they cannot do:** read the HMAC secret, sign anything, change the publish
+flag, reach the content endpoint, or trigger a connect — every one of those is
+either signature-verified or behind your admin gate.
+
+Recommendations, in order of how much they matter:
+
+1. **Never expose the admin API with only one of the two checks.** The session
+   proves *who*; the nonce proves *which page*. The bridge accepts messages from
+   an iframe hosted by Microsoft — the nonce is what stops that iframe (or any
+   other page) from driving your site on its own.
+2. **Set `encryptionKey`.** Without it the HMAC secret sits in clear in your
+   state file. With it, a leaked file is not a usable credential.
+3. **Treat the state file like a credential store.** Persistent volume,
+   restricted permissions, out of your repo and out of backups you share.
+4. **Give the panel its own session**, separate from any public login your app
+   has. `createAdminAuth` uses an HttpOnly, SameSite=Lax, Secure cookie and a
+   constant-time password compare, with login attempts rate-limited per IP.
+5. **Gate the panel at the edge too if you can** — an IP allow-list or a VPN in
+   front of `/admin` costs nothing and removes the whole surface.
+6. **Keep the proxy gate as defence in depth, never as the only check.** A
+   matcher change must not be what stands between the internet and `connect`;
+   the route handlers verify the session again for exactly that reason.
+7. **Rotate by disconnecting.** `disconnect` tells the backend to tear the site
+   down and then wipes local state; reconnecting mints a fresh secret.
+
+Two deliberate deviations from the plugin, both hardening:
+
+- The dashboard's `REDIRECT` operation is **ignored**. In WordPress it opens
+  wp-admin's permalink settings; here it would be an outside party choosing a
+  URL to open. There is no equivalent to redirect to.
+- The dashboard's agent switch is stored as its own flag instead of overwriting
+  `BAOauthSuccess`. Turning the agent off hides the widget without erasing the
+  record of a working connection, so you never have to reconnect to turn it back
+  on.
 
 ## Configuration
 
@@ -193,11 +293,13 @@ stable hostname, and set `siteUrl` to that hostname.
 | --- | --- | --- |
 | `siteUrl` | *(required)* | Public origin, no trailing slash. The identity you register and the origin the loopback hits. |
 | `storage` | *(required)* | Where the connection lives. See below. |
-| `clarityProjectId` | — | Your Clarity project id. Can also be set at runtime. |
+| `clarityProjectId` | — | Your Clarity project id. Can also be linked from the panel. |
 | `encryptionKey` | — | AES-256-CBC key for the secret at rest. `null` stores it in clear. |
 | `content` | — | Content provider. Without one, content endpoints return empty. |
 | `allowedContentTypes` | `['post','page']` | Types the backend may request. |
+| `rateLimit` | `{ max: 120, windowMs: 60000 }` | Per-IP limit on the public widget endpoints. `false` disables. |
 | `clarityServerUrl` | `https://clarity.microsoft.com` | Override for testing. |
+| `embedBaseUrl` | `https://clarity.microsoft.com/embed` | Panel iframe; its origin is the postMessage allow-list. |
 | `backendBaseUrl` | *(resolved)* | Pin the backend instead of discovering it. |
 | `frontendInjectionUrl` | Microsoft CDN | Widget loader URL. |
 | `pluginVersion` | `1.0.0` | Reported by `api/config/status`. |
@@ -245,7 +347,7 @@ time, so call the equivalent yourself:
 
 ```ts
 await brandAgent.content.syncAll();                       // after a deploy
-await brandAgent.content.upsert('updated', item);         // on-demand
+await brandAgent.content.upsert('updated', item);         // on demand
 await brandAgent.content.deleted(id, 'page');
 ```
 
@@ -268,6 +370,14 @@ byte-identical to the backend's, so the signed path+query has to match the URL
 you actually call, and `siteUrl` has to match what you registered — exactly,
 including `www` and the scheme.
 
+**The panel loads but the iframe is blank.** Check the browser console for a
+frame-ancestors or X-Frame-Options refusal, and confirm `embedUrl` in the admin
+status response carries `integration=Wordpress` and both `*BrandAgentSupported`
+flags.
+
+**The dashboard's buttons do nothing.** Every bridge action needs a valid nonce.
+If the panel has been open for hours the CSRF token has expired: reload it.
+
 **Widget never appears.** Check `api/config/status`: `BAInjectFrontendScript`
 stays `false` until you publish the agent from the Clarity dashboard, and the
 backend needs a working signed call to flip it.
@@ -283,10 +393,11 @@ pnpm typecheck
 pnpm test
 ```
 
-The suite pins the two things that cannot be debugged from the outside: the
-outbound canonical request and the inbound message, each checked against a
-signature computed independently with `openssl`. If a refactor reorders a field,
-a test fails here instead of turning into a silent `401` in production.
+The suite pins the things that cannot be debugged from the outside: the outbound
+canonical request and the inbound message, each checked against a signature
+computed independently with `openssl`, plus the auth, nonce and rate-limit
+behaviour. If a refactor reorders a field, a test fails here instead of turning
+into a silent `401` in production.
 
 ## License
 

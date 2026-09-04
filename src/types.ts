@@ -93,6 +93,18 @@ export interface BrandAgentConfigInput {
   /** Widget loader URL. Default: the Microsoft CDN build. */
   frontendInjectionUrl?: string;
 
+  /**
+   * Embedded Clarity dashboard. Default `https://clarity.microsoft.com/embed`.
+   * Its origin is also the postMessage allow-list for the admin panel.
+   */
+  embedBaseUrl?: string;
+
+  /**
+   * Rate limit for the public widget endpoints (`config/read`, `v1/init`),
+   * per client IP. Defaults to 120 requests/minute; `false` disables it.
+   */
+  rateLimit?: { max?: number; windowMs?: number } | false;
+
   /** Version string reported by `api/config/status` (the plugin reports its own). */
   pluginVersion?: string;
 
@@ -109,6 +121,8 @@ export interface BrandAgentStatus {
   unverified: boolean;
   /** Set by the backend when the agent is published; gates the widget. */
   injectFrontendScript: boolean;
+  /** Agent switch, toggled from the dashboard (AGENT_ENABLED_CHANGE). */
+  agentEnabled: boolean;
   platform: string | null;
   projectId: string;
   siteId: string | null;
@@ -118,6 +132,12 @@ export interface BrandAgentStatus {
   /** Normalized site URL: the HMAC client id. */
   clientId: string;
   encryptionKeyConfigured: boolean;
+  /** Ready-to-frame URL of the embedded Clarity dashboard, when a nonce is issued. */
+  embedUrl?: string;
+  /** Origin allowed to postMessage the admin panel. */
+  embedOrigin?: string;
+  /** CSRF token the dashboard echoes back; required by mutating admin actions. */
+  csrfToken?: string;
 }
 
 export interface BrandAgentConnectResult {

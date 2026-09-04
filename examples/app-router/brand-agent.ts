@@ -1,7 +1,7 @@
 // Single place where the agent is configured — the equivalent of the plugin's
 // settings screen. Import this from every route that needs it.
 
-import { createBrandAgent, fileStorage, sitemapContentProvider } from 'next-clarity-brand-agent';
+import { createAdminAuth, createBrandAgent, fileStorage, sitemapContentProvider } from 'next-clarity-brand-agent';
 
 const siteUrl = process.env.BRAND_AGENT_SITE_URL ?? 'https://example.com';
 
@@ -23,4 +23,13 @@ export const brandAgent = createBrandAgent({
   }),
 
   logger: (message, context) => console.log(message, context ?? {}),
+});
+
+/**
+ * Gate for the control panel. Drop this if your app already has an admin
+ * session — pass your own check to `createAdminHandlers({ authorize })`.
+ */
+export const adminAuth = createAdminAuth({
+  password: process.env.BRAND_AGENT_ADMIN_PASSWORD,
+  sessionSecret: process.env.BRAND_AGENT_SESSION_SECRET,
 });

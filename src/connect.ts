@@ -29,7 +29,7 @@ export async function getSiteId(ctx: BrandAgentContext): Promise<string> {
 }
 
 export async function getStatus(ctx: BrandAgentContext): Promise<BrandAgentStatus> {
-  const [oauth, secret, inject, platform, siteId, advertiserId, connectedAt, unverified, projectId] =
+  const [oauth, secret, inject, platform, siteId, advertiserId, connectedAt, unverified, projectId, agentEnabled] =
     await Promise.all([
       ctx.storage.get(KEYS.oauthSuccess),
       getHmacSecret(ctx),
@@ -40,12 +40,16 @@ export async function getStatus(ctx: BrandAgentContext): Promise<BrandAgentStatu
       ctx.storage.get(KEYS.connectedAt),
       ctx.storage.get(KEYS.connectUnverified),
       getProjectId(ctx),
+      ctx.storage.get(KEYS.agentEnabled),
     ]);
 
   return {
     connected: oauth === '1' && Boolean(secret),
     unverified: unverified === '1',
     injectFrontendScript: inject === 'true',
+    // Absent means enabled: the dashboard only ever writes this to turn the
+    // agent off and back on.
+    agentEnabled: agentEnabled !== '0',
     platform,
     projectId,
     siteId,
