@@ -132,6 +132,26 @@ export interface BrandAgentConfigInput {
    */
   backendBaseUrl?: string;
 
+  /**
+   * Rewrite the widget configuration on its way to the browser.
+   *
+   * `api/config/read` is Microsoft's answer about how the agent should behave
+   * on your pages — which entry point to draw, which nudges to run. It passes
+   * through your origin, so you can adjust it: the usual reason is an entry
+   * point the dashboard will not let you choose, such as forcing the chat
+   * bubble with `IsBubbleEntrypointEnabled`.
+   *
+   * This is an override of someone else's contract, so treat it as one. The
+   * field names are not documented and not stable; when they change, your
+   * override stops applying — silently, because there is nothing to fail. Keep
+   * it to the few keys you actually need, and check the widget still behaves
+   * after their updates. Return a new object, or mutate the one you are given.
+   *
+   * A transform that throws is skipped and the original answer is served
+   * untouched: an override must never be able to break the widget.
+   */
+  transformWidgetConfig?: (config: Record<string, unknown>) => Record<string, unknown> | void;
+
   /** Widget loader URL. Default: the Microsoft CDN build. */
   frontendInjectionUrl?: string;
 

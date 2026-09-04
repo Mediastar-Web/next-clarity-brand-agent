@@ -83,6 +83,7 @@ export interface BrandAgentContext {
   clarityServerUrl: string;
   backendBaseUrl: string | null;
   frontendInjectionUrl: string;
+  transformWidgetConfig: ((config: Record<string, unknown>) => Record<string, unknown> | void) | null;
   embedBaseUrl: string;
   pluginVersion: string;
   widgetRateLimiter: RateLimiter | null;
@@ -231,6 +232,7 @@ export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
     clarityServerUrl: trimTrailingSlashes(input.clarityServerUrl?.trim() || DEFAULT_CLARITY_SERVER_URL),
     backendBaseUrl: input.backendBaseUrl ? trimTrailingSlashes(input.backendBaseUrl.trim()) : null,
     frontendInjectionUrl: input.frontendInjectionUrl?.trim() || DEFAULT_FRONTEND_INJECTION_URL,
+    transformWidgetConfig: input.transformWidgetConfig ?? null,
     embedBaseUrl: trimTrailingSlashes(input.embedBaseUrl?.trim() || DEFAULT_EMBED_BASE_URL),
     rateLimitPolicy,
     widgetRateLimiter:

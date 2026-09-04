@@ -130,10 +130,49 @@ async function handleConfigRead(ctx: BrandAgentContext, request: Request): Promi
     return wpJsonError('Failed to retrieve configuration', upstream.status);
   }
 
-  return new Response(await upstream.text(), {
+  return new Response(rewriteWidgetConfig(ctx, await upstream.text()), {
     status: 200,
     headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
   });
+}
+
+/**
+ * Apply `transformWidgetConfig`, preserving how the backend encodes its answer.
+ *
+ * That answer is double-encoded: a JSON *string* whose content is the JSON
+ * object the widget parses. Re-serializing it as a plain object would hand the
+ * widget something it cannot read, so the shape that came in is the shape that
+ * goes out.
+ *
+ * Every failure path returns the original body verbatim. An override exists to
+ * change an entry point, and must never be able to take the widget down with
+ * it — including when Microsoft changes the payload under us.
+ */
+function rewriteWidgetConfig(ctx: BrandAgentContext, body: string): string {
+  if (!ctx.transformWidgetConfig) return body;
+
+  try {
+    let payload: unknown = JSON.parse(body);
+
+    const doubleEncoded = typeof payload === 'string';
+    if (doubleEncoded) payload = JSON.parse(payload as string);
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      ctx.log('brand-agent: widget config not an object, left untouched');
+      return body;
+    }
+
+    const draft = { ...(payload as Record<string, unknown>) };
+    const next = ctx.transformWidgetConfig(draft) ?? draft;
+    const encoded = JSON.stringify(next);
+
+    return doubleEncoded ? JSON.stringify(encoded) : encoded;
+  } catch (error) {
+    ctx.log('brand-agent: widget config transform skipped', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return body;
+  }
 }
 
 /**

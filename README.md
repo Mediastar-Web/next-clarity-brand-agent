@@ -363,6 +363,7 @@ Two deliberate deviations from the plugin, both hardening:
 | `clarityServerUrl` | `https://clarity.microsoft.com` | Override for testing. |
 | `embedBaseUrl` | `https://clarity.microsoft.com/embed` | Panel iframe; its origin is the postMessage allow-list. |
 | `backendBaseUrl` | *(resolved)* | Pin the backend instead of discovering it. |
+| `transformWidgetConfig` | — | Rewrite the widget configuration on its way to the browser. See below. |
 | `frontendInjectionUrl` | Microsoft CDN | Widget loader URL. |
 | `pluginVersion` | `1.0.0` | Reported by `api/config/status`. |
 | `logger` | no-op | `(message, context) => void`. |
@@ -415,6 +416,33 @@ await brandAgent.content.deleted(id, 'page');
 
 These are no-ops until the agent is published — before that there is no index on
 the other side.
+
+### Rewriting the widget configuration
+
+`api/config/read` is Microsoft's answer about how the agent should behave on
+your pages — which entry point to draw, which nudges to run. It travels through
+your origin, so you can adjust it on the way past:
+
+```ts
+createBrandAgent({
+  // The dashboard decides the entry point, and does not always let you pick.
+  // Forcing the chat bubble instead of the behavioural nudges:
+  transformWidgetConfig: (config) => ({ ...config, IsBubbleEntrypointEnabled: true }),
+});
+```
+
+Two things make this safe to use and one makes it risky.
+
+The payload is **double-encoded** — a JSON string whose content is the JSON
+object the widget parses — and the transform preserves that shape, so the widget
+still reads what it expects. And every failure path serves the original answer
+verbatim: a transform that throws, or a payload that stops being an object, is
+skipped rather than allowed to take the widget down.
+
+The risk is that this is an override of someone else's contract. The field names
+are undocumented and unstable; when they change, your override stops applying
+**silently**, because there is nothing to fail. Keep it to the few keys you
+need, and re-check the widget after their updates.
 
 ## Troubleshooting
 

@@ -209,3 +209,97 @@ test('connect-verify rejects an expired nonce', async () => {
   );
   assert.equal(res.status, 401);
 });
+
+// ── Riscrittura della configurazione del widget ─────────────────────────────
+
+/** Finge il backend: `fetch` risponde con `body`, e restituisce l'URL chiamato. */
+function stubBackend(body: string): { restore: () => void } {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
+  return { restore: () => { globalThis.fetch = original; } };
+}
+
+async function readConfig(ctx: BrandAgentContext): Promise<string> {
+  const res = await createProxyHandlers(ctx).GET(
+    new Request(`${SITE}/a/msba/api/config/read?clientId=example-com`),
+  );
+  return res.text();
+}
+
+async function transformingCtx(
+  transform: (config: Record<string, unknown>) => Record<string, unknown> | void,
+): Promise<BrandAgentContext> {
+  const ctx = resolveConfig({
+    siteUrl: SITE,
+    storage: memoryStorage(),
+    encryptionKey: 'unit-test-key',
+    backendBaseUrl: 'http://127.0.0.1:9',
+    rateLimit: false,
+    transformWidgetConfig: transform,
+  });
+  await setHmacSecret(ctx, 'test-secret');
+  await ctx.storage.set(KEYS.oauthSuccess, '1');
+  return ctx;
+}
+
+test('the widget config transform preserves the backend double encoding', async () => {
+  // The backend answers with a JSON *string* containing the JSON object.
+  const stub = stubBackend(JSON.stringify(JSON.stringify({ IsBubbleEntrypointEnabled: false, Other: 1 })));
+  try {
+    const ctx = await transformingCtx((config) => ({ ...config, IsBubbleEntrypointEnabled: true }));
+    const body = await readConfig(ctx);
+
+    // Still double-encoded, or the widget cannot parse it.
+    const outer: unknown = JSON.parse(body);
+    assert.equal(typeof outer, 'string');
+    assert.deepEqual(JSON.parse(outer as string), { IsBubbleEntrypointEnabled: true, Other: 1 });
+  } finally {
+    stub.restore();
+  }
+});
+
+test('a plainly encoded payload stays plainly encoded', async () => {
+  const stub = stubBackend(JSON.stringify({ IsBubbleEntrypointEnabled: false }));
+  try {
+    const ctx = await transformingCtx((config) => {
+      config.IsBubbleEntrypointEnabled = true; // mutation instead of a return
+    });
+    assert.deepEqual(JSON.parse(await readConfig(ctx)), { IsBubbleEntrypointEnabled: true });
+  } finally {
+    stub.restore();
+  }
+});
+
+test('a transform that throws leaves the answer untouched', async () => {
+  const original = JSON.stringify(JSON.stringify({ IsBubbleEntrypointEnabled: false }));
+  const stub = stubBackend(original);
+  try {
+    const ctx = await transformingCtx(() => {
+      throw new Error('the payload changed shape');
+    });
+    // Verbatim: an override must never be able to break the widget.
+    assert.equal(await readConfig(ctx), original);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('without a transform the body is passed through byte for byte', async () => {
+  const original = JSON.stringify(JSON.stringify({ IsBubbleEntrypointEnabled: false }));
+  const stub = stubBackend(original);
+  try {
+    const ctx = resolveConfig({
+      siteUrl: SITE,
+      storage: memoryStorage(),
+      encryptionKey: 'unit-test-key',
+      backendBaseUrl: 'http://127.0.0.1:9',
+      rateLimit: false,
+    });
+    await setHmacSecret(ctx, 'test-secret');
+    await ctx.storage.set(KEYS.oauthSuccess, '1');
+    assert.equal(await readConfig(ctx), original);
+  } finally {
+    stub.restore();
+  }
+});
