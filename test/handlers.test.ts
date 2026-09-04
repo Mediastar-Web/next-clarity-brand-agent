@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import test from 'node:test';
 import { KEYS, resolveConfig, type BrandAgentContext } from '../src/config.js';
+import { connect, getProjectId } from '../src/connect.js';
 import { buildInboundMessage, setHmacSecret, sha256Hex } from '../src/crypto.js';
 import { staticContentProvider } from '../src/content.js';
 import { createConnectVerifyHandler, createProxyHandlers } from '../src/handlers.js';
@@ -302,4 +303,25 @@ test('without a transform the body is passed through byte for byte', async () =>
   } finally {
     stub.restore();
   }
+});
+
+test('connect is attempted even without a project id, as the plugin does', async () => {
+  // The dashboard drives the onboarding and can ask for the connect before it
+  // has told the site which project it linked. WordPress sends an empty
+  // `clarityProjectId` and lets the backend decide; a local refusal here would
+  // break the flow the dashboard is in the middle of.
+  const ctx = resolveConfig({
+    siteUrl: SITE,
+    storage: memoryStorage(),
+    encryptionKey: 'k',
+    rateLimit: false,
+    // Pinned to a dead address: the attempt must reach the network, not stop earlier.
+    clarityServerUrl: 'http://127.0.0.1:9',
+  });
+
+  assert.equal(await getProjectId(ctx), '');
+
+  const result = await connect(ctx);
+  assert.equal(result.success, false);
+  assert.equal(result.errorCode, 'transport', 'it must fail on the wire, not on a local guard');
 });

@@ -145,10 +145,11 @@ export async function connect(ctx: BrandAgentContext): Promise<BrandAgentConnect
     };
   }
 
+  // Sent even when empty, exactly as the plugin does
+  // (`get_option('clarity_project_id', '')`): the dashboard drives this flow and
+  // may ask for the connect before it has told us which project it linked.
+  // Refusing locally would break the onboarding it is in the middle of.
   const projectId = await getProjectId(ctx);
-  if (!projectId) {
-    return { success: false, error: 'No Clarity project id configured.', errorCode: 'missing_project_id' };
-  }
 
   const connectNonce = randomToken(32);
   await storeConnectNonce(ctx, connectNonce);

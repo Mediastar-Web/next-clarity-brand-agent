@@ -111,7 +111,10 @@ export async function syncAllContent(
   // that slice times out), and stopping there would silently abandon the rest
   // of the site while still reporting success.
   for (let page = 1; page <= pages; page += 1) {
-    const { items, total } = await ctx.content.list({ page, perPage, types: [] });
+    // The allow-list, not `[]`: an empty list means "no filter" to a provider,
+    // and this push would then carry types `api/content/fetch` would have
+    // refused to hand over.
+    const { items, total } = await ctx.content.list({ page, perPage, types: ctx.allowedContentTypes });
     if (page === 1) pages = Math.max(1, Math.ceil(total / perPage));
 
     // Documents the provider promised for this page but did not produce.

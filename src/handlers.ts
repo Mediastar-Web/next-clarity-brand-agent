@@ -356,8 +356,10 @@ async function handleContentFetch(ctx: BrandAgentContext, request: Request): Pro
   // fully disallowed `types` must fall back to the allow-list itself — not to
   // `[]`, which would hand back every type the provider knows.
   const types = allowed.length > 0 ? allowed : ctx.allowedContentTypes;
-  const page = Math.max(1, Number(body.page) || 1);
-  const perPage = Math.min(100, Math.max(1, Number(body.per_page) || 50));
+  // Whole numbers, like `absint()` on the WordPress side: a fractional `page`
+  // would slice a provider differently there and here.
+  const page = Math.max(1, Math.floor(Number(body.page)) || 1);
+  const perPage = Math.min(100, Math.max(1, Math.floor(Number(body.per_page)) || 50));
 
   if (!ctx.content) {
     return noStore(wpJsonSuccess({ page, per_page: perPage, total: 0, total_pages: 0, count: 0, items: [] }));
@@ -370,7 +372,8 @@ async function handleContentFetch(ctx: BrandAgentContext, request: Request): Pro
       page,
       per_page: perPage,
       total: result.total,
-      total_pages: Math.max(1, Math.ceil(result.total / perPage)),
+      // `WP_Query::max_num_pages` is 0 when nothing matched, not 1.
+      total_pages: result.total > 0 ? Math.ceil(result.total / perPage) : 0,
       count: result.items.length,
       items: result.items,
     }),

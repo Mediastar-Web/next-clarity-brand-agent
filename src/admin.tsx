@@ -238,9 +238,16 @@ export function BrandAgentAdmin({
       const data = event.data as { operation?: number; id?: unknown; status?: unknown; nonce?: unknown } | null;
       if (!data || typeof data.operation !== 'number') return;
 
-      // The dashboard echoes the nonce we handed it in the iframe URL; the
-      // server verifies it before acting.
-      const nonce = typeof data.nonce === 'string' ? data.nonce : undefined;
+      // The dashboard echoes the nonce we handed it in the iframe URL, and the
+      // server verifies it before acting. No fallback to the panel's own token:
+      // the session proves who, this proves which page asked, and quietly
+      // substituting one for the other would drop half the check the plugin
+      // makes.
+      const nonce = typeof data.nonce === 'string' ? data.nonce : '';
+      if (!nonce) {
+        append('dashboard: message without a nonce, ignored', 'error');
+        return;
+      }
 
       switch (data.operation) {
         case MessageOperation.PROJECT_ID_CHANGE: {

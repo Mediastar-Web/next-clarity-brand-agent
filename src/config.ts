@@ -39,6 +39,9 @@ export const PROXY_BASE_PATH = '/a/msba';
 
 export type RateLimitPolicy = 'enforced' | 'disabled' | 'unkeyed';
 
+/** Version of the `microsoft-clarity` plugin this speaks the protocol of. */
+export const MIRRORED_PLUGIN_VERSION = '0.10.29';
+
 /** Default widget loader, same URL the plugin injects. */
 export const DEFAULT_FRONTEND_INJECTION_URL =
   'https://adsagentclientafd-b7hqhjdrf3fpeqh2.b01.azurefd.net/frontendInjection.js';
@@ -240,7 +243,10 @@ export function resolveConfig(input: BrandAgentConfigInput): BrandAgentContext {
         ? createRateLimiter({ max: rateLimit?.max ?? 120, windowMs: rateLimit?.windowMs ?? 60_000 })
         : null,
     clientIp: (request: Request) => resolveClientIp(request, ipOptions),
-    pluginVersion: input.pluginVersion?.trim() || '1.0.0',
+    // The version of the plugin whose protocol this mirrors, not ours: the
+    // backend may gate capabilities on it, and claiming a number that plugin
+    // never shipped invites being offered a contract we do not implement.
+    pluginVersion: input.pluginVersion?.trim() || MIRRORED_PLUGIN_VERSION,
     log,
   };
 }
