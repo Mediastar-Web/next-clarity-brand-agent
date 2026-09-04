@@ -169,22 +169,48 @@ export function connect(ctx: BrandAgentContext): Promise<BrandAgentConnectResult
   return attempt;
 }
 
+/**
+ * The lock carries an owner, `<expiry>:<random>`, for the same reason the
+ * plugin's does: without one, an attempt whose lock has already expired
+ * releases whatever it finds on the way out — which is the *next* attempt's
+ * lock — and two connects run anyway.
+ *
+ * The `BrandAgentStorage` contract is get/set/delete, with no insert-if-absent,
+ * so this cannot be atomic the way the plugin's `INSERT IGNORE` is. Writing and
+ * reading back narrows the window to the gap between two adjacent operations
+ * instead of the whole round trip, and the shared promise above closes it
+ * entirely for the case that actually happens: the same process asked twice.
+ */
 async function runConnect(ctx: BrandAgentContext): Promise<BrandAgentConnectResult> {
-  const lockedUntil = Number((await ctx.storage.get(KEYS.connectLock)) ?? 0);
-  if (lockedUntil > Date.now()) {
+  const busy: BrandAgentConnectResult = {
+    success: false,
+    error: 'A connect is already running. Wait for it to finish before starting another.',
+    errorCode: 'connect_in_progress',
+  };
+
+  const held = await ctx.storage.get(KEYS.connectLock);
+  if (held && Number(held.split(':')[0]) > Date.now()) {
     ctx.log('brand-agent: connect already in progress');
-    return {
-      success: false,
-      error: 'A connect is already running. Wait for it to finish before starting another.',
-      errorCode: 'connect_in_progress',
-    };
+    return busy;
   }
 
-  await ctx.storage.set(KEYS.connectLock, String(Date.now() + CONNECT_LOCK_TTL_MS));
+  const owner = `${Date.now() + CONNECT_LOCK_TTL_MS}:${randomToken(16)}`;
+  await ctx.storage.set(KEYS.connectLock, owner);
+
+  // Someone who wrote after us owns it now, and their round trip is the one
+  // that counts.
+  if ((await ctx.storage.get(KEYS.connectLock)) !== owner) {
+    ctx.log('brand-agent: connect already in progress');
+    return busy;
+  }
+
   try {
     return await performConnect(ctx);
   } finally {
-    await ctx.storage.delete(KEYS.connectLock);
+    // Only ours. A lock that expired and was taken over belongs to someone else.
+    if ((await ctx.storage.get(KEYS.connectLock)) === owner) {
+      await ctx.storage.delete(KEYS.connectLock);
+    }
   }
 }
 

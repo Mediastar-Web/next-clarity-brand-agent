@@ -378,6 +378,9 @@ async function handleContentFetch(ctx: BrandAgentContext, request: Request): Pro
   // back to the default — `intval('nope')` is 0, and `max(1, 0)` is 1.
   const whole = (value: unknown): number | null => {
     if (value === undefined || value === null) return null;
+    // `intval()` on an array is 1, and on anything else non-scalar 0 — never
+    // the number JavaScript would coerce out of `[20]`.
+    if (typeof value !== 'number' && typeof value !== 'string' && typeof value !== 'boolean') return 0;
     const parsed = Math.floor(Number(value));
     return Number.isFinite(parsed) ? parsed : 0;
   };

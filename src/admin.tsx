@@ -118,6 +118,17 @@ function Chip({ label, tone }: { label: string; tone: 'ok' | 'warn' | 'off' }) {
   );
 }
 
+/**
+ * What the dashboard branches on, and what the iframe URL carries: the site it
+ * speaks for, whether that site is connected, which project is linked, and
+ * whether the agent is on. The CSRF nonce is deliberately not in here — it
+ * changes on every status read, and following it reloaded the dashboard
+ * constantly.
+ */
+function embedKeyOf(status: AdminStatus): string {
+  return `${status.siteUrl}|${status.connected}|${status.projectId}|${status.agentEnabled}`;
+}
+
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div style={styles.cell}>
@@ -158,18 +169,6 @@ export function BrandAgentAdmin({
    */
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
   const embedKeyRef = useRef('');
-  /**
-   * Set by the panel's own controls before they refresh, never by the bridge.
-   *
-   * The dashboard advances itself: when it asks us to store a project id, flip
-   * the agent switch or run the connect, it is mid-flow and reloading it would
-   * destroy the document that asked — and, for connect, the
-   * `WORDPRESS_CONNECT_SUCCESS` reply would land in a fresh page that never
-   * asked for it. The plugin never touches the iframe for exactly this reason.
-   * Our own buttons are the extra WordPress does not have, and only they may
-   * ask for a reload.
-   */
-  const panelDrivenRef = useRef(false);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [authInfo, setAuthInfo] = useState<AuthInfo | null>(null);
   const [setupToken, setSetupToken] = useState('');
@@ -200,11 +199,11 @@ export function BrandAgentAdmin({
       const res = await fetch(apiPath, { cache: 'no-store' });
       if (res.status === 401 || res.status === 403) {
         setState('unauthorized');
-        return;
+        return null;
       }
       if (!res.ok) {
         setState('error');
-        return;
+        return null;
       }
       const next = (await res.json()) as AdminStatus;
       setStatus(next);
@@ -212,21 +211,47 @@ export function BrandAgentAdmin({
       // Prefilled with the origin this page was served from, so confirming the
       // domain is one click in the ordinary case.
       setSiteUrlDraft((current) => current || next.siteUrl || next.siteUrlSuggestion || '');
-      // `siteUrl` belongs in the key: it is in the iframe URL, and confirming
-      // the domain on first run changes it from empty to real.
-      const embedKey = `${next.siteUrl}|${next.connected}|${next.projectId}|${next.agentEnabled}`;
-      const first = embedKeyRef.current === '';
 
-      if (next.embedUrl && (first || (panelDrivenRef.current && embedKey !== embedKeyRef.current))) {
+      // First load, and only that: from here on the iframe is reloaded by
+      // whoever asked for the change, never by a plain status read.
+      if (next.embedUrl && !embedKeyRef.current) {
+        embedKeyRef.current = embedKeyOf(next);
         setEmbedUrl(next.embedUrl);
       }
-      embedKeyRef.current = embedKey;
-      panelDrivenRef.current = false;
+
       setState('ready');
+      return next;
     } catch {
       setState('error');
+      return null;
     }
   }, [apiPath, sessionPath]);
+
+  /**
+   * Reload the dashboard, but only for a change this panel's own buttons made.
+   *
+   * The dashboard advances itself: when it asks us to store a project id, flip
+   * the agent switch or run the connect, it is mid-flow, and reloading it would
+   * destroy the document that asked — for connect, the
+   * `WORDPRESS_CONNECT_SUCCESS` reply would then land in a fresh page that
+   * never asked for it, because `event.source` follows the frame and not the
+   * document. The plugin never touches the iframe for exactly this reason. Our
+   * own controls are the part WordPress does not have, so they are the only
+   * ones that may ask.
+   *
+   * The decision is made here, by the caller that knows its own provenance,
+   * with the status in hand — no shared flag that a concurrent refresh could
+   * read or clear, and the key moves only when the URL does.
+   */
+  const reloadEmbed = useCallback((next: AdminStatus | null | undefined) => {
+    if (!next?.embedUrl) return;
+
+    const key = embedKeyOf(next);
+    if (key === embedKeyRef.current) return;
+
+    embedKeyRef.current = key;
+    setEmbedUrl(next.embedUrl);
+  }, []);
 
   useEffect(() => {
     void refresh();
@@ -234,9 +259,6 @@ export function BrandAgentAdmin({
 
   const act = useCallback(
     async (action: string, payload: Record<string, unknown> = {}, nonce?: string): Promise<boolean> => {
-      // A nonce argument means the dashboard asked; anything else is a button
-      // in this panel, and only those may reload the iframe.
-      if (nonce === undefined) panelDrivenRef.current = true;
       setBusy(true);
       try {
         const res = await fetch(apiPath, {
@@ -258,10 +280,14 @@ export function BrandAgentAdmin({
         return false;
       } finally {
         setBusy(false);
-        void refresh();
+        // A nonce argument means the dashboard asked, and it is mid-flow;
+        // anything else is a button here, and may move the iframe.
+        void refresh().then((next) => {
+          if (nonce === undefined) reloadEmbed(next);
+        });
       }
     },
-    [apiPath, append, refresh],
+    [apiPath, append, refresh, reloadEmbed],
   );
 
   // ── postMessage bridge (js/add_window_listeners.js) ──────────────────────

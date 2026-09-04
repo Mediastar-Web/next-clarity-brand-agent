@@ -402,3 +402,27 @@ test('overlapping connects are one connect, not two secrets', async () => {
     globalThis.fetch = original;
   }
 });
+
+test('a stale connect lock is taken over, and its owner does not release the new one', async () => {
+  const storage = memoryStorage();
+  const ctx = resolveConfig({ siteUrl: SITE, storage, encryptionKey: 'k', rateLimit: false });
+
+  // Someone else's lock, already expired.
+  await storage.set('brandagent_connect_lock', `${Date.now() - 1000}:abandoned`);
+
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ hmac_secret: 's' }), { status: 200 })) as typeof fetch;
+  try {
+    assert.equal((await connect(ctx)).success, true, 'an expired lock must not block forever');
+    assert.equal(await storage.get('brandagent_connect_lock'), null);
+
+    // A live lock held by someone else is respected.
+    await storage.set('brandagent_connect_lock', `${Date.now() + 60_000}:somebody-else`);
+    const refused = await connect(ctx);
+    assert.equal(refused.errorCode, 'connect_in_progress');
+    // …and refusing must not have released it.
+    assert.match(String(await storage.get('brandagent_connect_lock')), /somebody-else/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
