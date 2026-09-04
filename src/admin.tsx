@@ -141,6 +141,19 @@ export function BrandAgentAdmin({
   const [password, setPassword] = useState('');
   const [projectDraft, setProjectDraft] = useState('');
   const [siteUrlDraft, setSiteUrlDraft] = useState('');
+  /**
+   * Frozen on first load, on purpose.
+   *
+   * Every status read mints a fresh CSRF nonce, and the nonce is inside the
+   * iframe URL — so following `status.embedUrl` meant that saving a project id,
+   * connecting, or any other action changed the `src` and reloaded the whole
+   * dashboard from scratch, throwing the administrator back to its start page
+   * mid-onboarding. WordPress never has this problem: its page is rendered once
+   * and the iframe is never touched again. The nonce we hand the dashboard stays
+   * valid for its full lifetime, and the panel's own actions keep using the
+   * fresh token from `statusRef`. Reload the page for a new one.
+   */
+  const [embedUrl, setEmbedUrl] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [authInfo, setAuthInfo] = useState<AuthInfo | null>(null);
   const [setupToken, setSetupToken] = useState('');
@@ -183,6 +196,7 @@ export function BrandAgentAdmin({
       // Prefilled with the origin this page was served from, so confirming the
       // domain is one click in the ordinary case.
       setSiteUrlDraft((current) => current || next.siteUrl || next.siteUrlSuggestion || '');
+      setEmbedUrl((current) => current ?? next.embedUrl ?? null);
       setState('ready');
     } catch {
       setState('error');
@@ -660,10 +674,10 @@ export function BrandAgentAdmin({
       </>
       )}
 
-      {showEmbed && status.embedUrl && (
+      {showEmbed && embedUrl && (
         <iframe
           title="Microsoft Clarity"
-          src={status.embedUrl}
+          src={embedUrl}
           style={{ ...styles.iframe, height: embedHeight ?? (layout === 'embed' ? '100vh' : '760px') }}
           sandbox="allow-modals allow-forms allow-scripts allow-same-origin allow-popups allow-storage-access-by-user-activation"
         />
