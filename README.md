@@ -84,15 +84,9 @@ npm install next-clarity-brand-agent
 npm install github:enricoangelon/next-clarity-brand-agent
 ```
 
-The package ships TypeScript sources, so Next has to compile them:
-
-```ts
-// next.config.ts
-const nextConfig = {
-  transpilePackages: ['next-clarity-brand-agent'],
-};
-export default nextConfig;
-```
+It ships compiled ESM plus type declarations, so there is nothing to configure
+in `next.config.ts`. Installing straight from git runs the build through
+`prepare`.
 
 Requires Node 20+, Next 15+ (Next 16's `proxy.ts` and Next 15's `middleware.ts`
 are both supported), React 18+.
@@ -155,9 +149,18 @@ match on its own, so it gets rewritten first:
 
 ```ts
 // proxy.ts   (middleware.ts on Next 15)
-import { brandAgentProxyMatchers, brandAgentRewrite } from 'next-clarity-brand-agent/proxy';
+import { brandAgentRewrite } from 'next-clarity-brand-agent/proxy';
 
-export const config = { matcher: [...brandAgentProxyMatchers] };
+// Matchers must be written out as literals: Next reads them statically at build
+// time and silently ignores anything it cannot — an imported constant or a
+// spread included. `brandAgentProxyMatchers` is exported for reference only.
+export const config = {
+  matcher: [
+    { source: '/', has: [{ type: 'query', key: 'rest_route' }] },
+    '/wp-json/:path*',
+    // ...your own matchers
+  ],
+};
 
 export function proxy(request: NextRequest) {
   return brandAgentRewrite(request) ?? NextResponse.next();
@@ -389,9 +392,23 @@ before that, use `api/content/fetch`, which the backend calls itself.
 
 ```bash
 pnpm install
+pnpm build       # compiles src/ to dist/
 pnpm typecheck
 pnpm test
 ```
+
+To try it against a real app before publishing, install the packed tarball
+rather than linking the directory — `pnpm link:`/`file:` on a *directory* leaves
+a symlink outside the app's root, which Turbopack will not resolve:
+
+```bash
+npm pack                                   # in this repo
+cd ../your-app && pnpm add file:../next-clarity-brand-agent/next-clarity-brand-agent-0.1.0.tgz
+```
+
+`scripts/dev-seed.mjs` seeds a fake credential so you can exercise the inbound
+half of the protocol — the signed `config/update` that publishes the widget —
+without a public domain. Its header comment has the full recipe.
 
 The suite pins the things that cannot be debugged from the outside: the outbound
 canonical request and the inbound message, each checked against a signature

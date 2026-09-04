@@ -4,7 +4,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { createAdminAuth } from 'next-clarity-brand-agent/auth';
-import { brandAgentProxyMatchers, brandAgentRewrite } from 'next-clarity-brand-agent/proxy';
+import { brandAgentRewrite } from 'next-clarity-brand-agent/proxy';
 
 // Re-created here rather than imported from `@/brand-agent`: the proxy runs on
 // every matched request and must not pull in storage or the rest of the agent.
@@ -14,9 +14,15 @@ const adminAuth = createAdminAuth({
   sessionSecret: process.env.BRAND_AGENT_SESSION_SECRET,
 });
 
+// Written out as literals on purpose: Next analyses this array statically at
+// build time and ignores anything it cannot read — an imported constant or a
+// spread included. The first entry catches the dashboard's ownership callback,
+// which arrives as `/?rest_route=/adsagent/v1/...`; the `has` condition keeps it
+// off every ordinary request to the homepage.
 export const config = {
   matcher: [
-    ...brandAgentProxyMatchers,
+    { source: '/', has: [{ type: 'query', key: 'rest_route' }] },
+    '/wp-json/:path*',
     '/admin/:path*',
     '/api/admin/:path*',
   ],
