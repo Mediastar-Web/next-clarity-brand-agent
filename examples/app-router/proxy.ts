@@ -3,8 +3,8 @@
 
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { createAdminAuth } from 'next-clarity-brand-agent/auth';
-import { brandAgentRewrite } from 'next-clarity-brand-agent/proxy';
+import { createAdminAuth } from '@mediastarweb/next-clarity-brand-agent/auth';
+import { brandAgentRewrite } from '@mediastarweb/next-clarity-brand-agent/proxy';
 
 // Re-created here rather than imported from `@/brand-agent`: the proxy runs on
 // every matched request and must not pull in storage or the rest of the agent.

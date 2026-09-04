@@ -7,8 +7,8 @@
 //   - the Brand Agent widget, which stays dormant until the backend publishes
 //     the agent.
 
-import { BrandAgentWidget } from 'next-clarity-brand-agent/client';
-import { ClarityTag } from 'next-clarity-brand-agent/tag';
+import { BrandAgentWidget } from '@mediastarweb/next-clarity-brand-agent/client';
+import { ClarityTag } from '@mediastarweb/next-clarity-brand-agent/tag';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

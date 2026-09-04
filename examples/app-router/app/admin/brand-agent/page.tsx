@@ -5,7 +5,7 @@
 // component itself only renders what the API is willing to hand it, but there
 // is no reason to advertise the page.
 
-import { BrandAgentAdmin } from 'next-clarity-brand-agent/admin';
+import { BrandAgentAdmin } from '@mediastarweb/next-clarity-brand-agent/admin';
 
 export const metadata = { robots: { index: false, follow: false } };
 export const dynamic = 'force-dynamic';

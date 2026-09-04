@@ -1,4 +1,4 @@
-# next-clarity-brand-agent
+# @mediastarweb/next-clarity-brand-agent
 
 Connect a **Next.js** site to the **Microsoft Clarity Brand Agent** — the Clarity
 AI chat agent that Microsoft currently ships only as a WordPress/WooCommerce
@@ -79,7 +79,7 @@ package cannot answer for you — it resolves by trying.
 ## Install
 
 ```bash
-npm install next-clarity-brand-agent
+npm install @mediastarweb/next-clarity-brand-agent
 # or straight from GitHub
 npm install github:Mediastar-Web/next-clarity-brand-agent
 ```
@@ -99,7 +99,7 @@ A complete, copy-pasteable app lives in [`examples/app-router`](./examples/app-r
 
 ```ts
 // brand-agent.ts
-import { createAdminAuth, createBrandAgent, fileStorage, sitemapContentProvider } from 'next-clarity-brand-agent';
+import { createAdminAuth, createBrandAgent, fileStorage, sitemapContentProvider } from '@mediastarweb/next-clarity-brand-agent';
 
 const siteUrl = 'https://example.com';
 
@@ -149,7 +149,7 @@ match on its own, so it gets rewritten first:
 
 ```ts
 // proxy.ts   (middleware.ts on Next 15)
-import { brandAgentRewrite } from 'next-clarity-brand-agent/proxy';
+import { brandAgentRewrite } from '@mediastarweb/next-clarity-brand-agent/proxy';
 
 // Matchers must be written out as literals: Next reads them statically at build
 // time and silently ignores anything it cannot — an imported constant or a
@@ -199,7 +199,7 @@ The page:
 
 ```tsx
 // app/admin/brand-agent/page.tsx
-import { BrandAgentAdmin } from 'next-clarity-brand-agent/admin';
+import { BrandAgentAdmin } from '@mediastarweb/next-clarity-brand-agent/admin';
 
 export const metadata = { robots: { index: false, follow: false } };
 
@@ -221,8 +221,8 @@ internet could make a signed-in admin's browser POST `connect` to your site.
 ### 5. Render the widget and the tag
 
 ```tsx
-import { BrandAgentWidget } from 'next-clarity-brand-agent/client';
-import { ClarityTag } from 'next-clarity-brand-agent/tag';
+import { BrandAgentWidget } from '@mediastarweb/next-clarity-brand-agent/client';
+import { ClarityTag } from '@mediastarweb/next-clarity-brand-agent/tag';
 
 <ClarityTag projectId={process.env.NEXT_PUBLIC_CLARITY_PROJECT_ID} />   // in <head>
 <BrandAgentWidget />                                                     // anywhere
@@ -342,8 +342,8 @@ Two deliberate deviations from the plugin, both hardening:
 Three methods — `get`, `set`, `delete` — so any store works.
 
 ```ts
-import { fileStorage, memoryStorage } from 'next-clarity-brand-agent';
-import { sqliteStorage } from 'next-clarity-brand-agent/sqlite';
+import { fileStorage, memoryStorage } from '@mediastarweb/next-clarity-brand-agent';
+import { sqliteStorage } from '@mediastarweb/next-clarity-brand-agent/sqlite';
 
 fileStorage({ path: '/data/brand-agent.json' })   // default, atomic writes
 sqliteStorage({ path: '/data/brand-agent.db' })   // needs better-sqlite3
@@ -436,7 +436,7 @@ a symlink outside the app's root, which Turbopack will not resolve:
 
 ```bash
 npm pack                                   # in this repo
-cd ../your-app && pnpm add file:../next-clarity-brand-agent/next-clarity-brand-agent-0.1.0.tgz
+cd ../your-app && pnpm add file:../next-clarity-brand-agent/mediastarweb-next-clarity-brand-agent-0.1.0.tgz
 ```
 
 `scripts/dev-seed.mjs` seeds a fake credential so you can exercise the inbound

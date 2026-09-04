@@ -1,7 +1,7 @@
 // Single place where the agent is configured — the equivalent of the plugin's
 // settings screen. Import this from every route that needs it.
 
-import { createAdminAuth, createBrandAgent, fileStorage, sitemapContentProvider } from 'next-clarity-brand-agent';
+import { createAdminAuth, createBrandAgent, fileStorage, sitemapContentProvider } from '@mediastarweb/next-clarity-brand-agent';
 
 const siteUrl = process.env.BRAND_AGENT_SITE_URL ?? 'https://example.com';
 
