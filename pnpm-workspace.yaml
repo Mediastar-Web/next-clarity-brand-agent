@@ -1,0 +1,6 @@
+# pnpm v11 reads build-script approvals from allowBuilds.
+allowBuilds:
+  # Only needed by the optional sqliteStorage adapter; never built for tests.
+  better-sqlite3: false
+  # tsx's bundler, used to run the test suite.
+  esbuild: true

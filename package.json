@@ -1,0 +1,54 @@
+{
+  "name": "next-clarity-brand-agent",
+  "version": "0.1.0",
+  "description": "Connect a Next.js site to the Microsoft Clarity Brand Agent, speaking the same protocol as the official WordPress plugin.",
+  "keywords": [
+    "next",
+    "nextjs",
+    "microsoft-clarity",
+    "clarity",
+    "brand-agent",
+    "adsagent",
+    "chat-agent"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./client": "./src/client.tsx",
+    "./proxy": "./src/proxy.ts",
+    "./sqlite": "./src/storage/sqlite.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "peerDependencies": {
+    "better-sqlite3": ">=9",
+    "next": ">=15",
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/react": "^19.0.0",
+    "next": "^16.2.4",
+    "react": "^19.2.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
